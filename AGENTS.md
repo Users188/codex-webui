@@ -6,7 +6,7 @@ When a user asks to install or set up this repository:
 
 1. Verify Node.js 20+ and npm are available.
 2. Run `npm install`.
-3. Run `npm run setup` to verify Codex availability, initialize the local token store, and install the global `codex-webui` command. Do not install the token manager skill globally during setup.
+3. Run `npm run setup` to verify Codex availability, initialize the local token store, and install the global `codex-webui` command.
 4. Follow `docs/DESKTOP_BRIDGE.md`, install the Desktop bridge launcher with `pwsh -NoProfile -File scripts/install-desktop-bridge.ps1`, and run `npm test`.
 5. Do not activate the launcher or restart Codex Desktop without user authorization. Once the launcher is active, Desktop bridge automatically starts one WebUI when its port is free and stops only the child it owns; do not launch a duplicate. Use `npm start` or `scripts/start-codex-webui.ps1 -Foreground` only for explicit manual operation or validation.
 6. Generate the selected token's LAN QR code with the token manager, report the LAN URL privately, and tell the user to scan the QR code. Never commit or broadly repeat its token-bearing URL.
@@ -20,7 +20,7 @@ Secrets, usage statistics, uploads, inline images, logs, and PID files belong in
 
 ## Token tasks
 
-Use the repository skill at `.agents/skills/codex-webui-token-manager/SKILL.md`. Install it into the user's `$HOME/.agents/skills` directory with `npm run skill:install` only when the user explicitly requests global access from other projects. Do not edit `tokens.json` directly and do not expose raw tokens unless the user explicitly requests a URL or QR code.
+Use the installed `codex-webui` command, or run `node scripts/token-manager.js` from this repository. Do not edit `tokens.json` directly and do not expose raw tokens unless the user explicitly requests a URL or QR code. This project does not bundle or install a Codex skill; token management is an ordinary local CLI operation.
 
 ## Validation
 

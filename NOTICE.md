@@ -7,7 +7,7 @@ Codex WebUI is an unofficial derivative project based on the MIT-licensed Codex 
 - Original copyright: Copyright (c) 2026 Codex Mobile contributors
 - License: MIT
 
-The current project is independently maintained and substantially modified. Major changes include the native Windows Desktop launcher, a single authoritative app-server broker shared with Codex Desktop, bidirectional conversation synchronization, workspace browsing and creation, send/guide/queue/stop actions, image-aware steering, rate-limit monitoring, directory-scoped access control, and optional Cloudflare Access integration.
+The original referenced revision starts an independent `codex app-server` from its WebUI backend. This project replaces that ownership model with a native Windows bridge: Codex Desktop owns the only app-server, while Desktop and WebUI coexist on the same service and authoritative notification stream. Major changes also include bidirectional conversation synchronization, Desktop-bound lifecycle management, workspace browsing and creation, send/guide/queue/stop actions, image-aware steering, rate-limit monitoring, directory-scoped access control, and optional Cloudflare Access integration.
 
 The original and current copyright notices are preserved in `LICENSE`. This repository does not include or redistribute the Codex executable, OpenAI credentials, model weights, conversation data, or internal deployment records.
 

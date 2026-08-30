@@ -1,7 +1,7 @@
 {
   "name": "codex-webui",
   "version": "0.1.0",
-  "description": "Self-hosted LAN web interface for OpenAI Codex with mobile access and directory-scoped tokens",
+  "description": "Native Windows WebUI coexisting with Codex Desktop on one shared app-server",
   "private": true,
   "license": "MIT",
   "repository": {
@@ -32,9 +32,8 @@
   "scripts": {
     "start": "node server/index.js",
     "setup": "node scripts/setup.js",
-    "skill:install": "node scripts/install-skill.js",
     "token": "node scripts/token-manager.js",
-    "check": "node --check public/app.js && node --check public/access-auth.js && node --check public/approval-policy.js && node --check public/follow-up.js && node --check public/rate-limits.js && node --check public/sidebar-projects.js && node --check public/thread-activity.js && node --check public/thread-settings.js && node --check public/thread-sync.js && node --check server/index.js && node --check server/cloudflare-access.js && node --check server/desktop-broker.js && node --check server/desktop-bridge-client.js && node --check server/desktop-bridge-common.js && node --check server/desktop-bridge-policy.js && node --check server/server-request-policy.js && node --check server/thread-notification-scope.js && node --check server/network-urls.js && node --check server/skill-install.js && node --check server/workspace-browser.js && node --check scripts/codex-webui.js && node --check scripts/token-manager.js && node --check scripts/setup.js && node --check scripts/install-skill.js && node --check .agents/skills/codex-webui-token-manager/scripts/token.js",
+    "check": "node --check public/app.js && node --check public/access-auth.js && node --check public/approval-policy.js && node --check public/follow-up.js && node --check public/rate-limits.js && node --check public/sidebar-projects.js && node --check public/thread-activity.js && node --check public/thread-settings.js && node --check public/thread-sync.js && node --check server/index.js && node --check server/cloudflare-access.js && node --check server/desktop-broker.js && node --check server/desktop-bridge-client.js && node --check server/desktop-bridge-common.js && node --check server/desktop-bridge-policy.js && node --check server/server-request-policy.js && node --check server/thread-notification-scope.js && node --check server/network-urls.js && node --check server/workspace-browser.js && node --check scripts/codex-webui.js && node --check scripts/token-manager.js && node --check scripts/setup.js",
     "test": "node --test"
   },
   "dependencies": {

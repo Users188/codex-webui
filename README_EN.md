@@ -25,6 +25,21 @@ Codex WebUI is a local, self-hosted web interface for OpenAI Codex. It uses the 
 
 Running separate app-servers for Codex Desktop and a WebUI can create competing conversation writers, inconsistent state, and follow-ups that appear on only one surface. This project uses a native Windows bridge so Desktop and browsers share one authoritative app-server. Desktop continues to own authentication and conversations; WebUI provides secure remote access and live presentation.
 
+## Key difference from the original repository
+
+This project changes the Codex runtime relationship instead of merely reskinning the original WebUI:
+
+| | Original Codex Mobile / Codex WebUI | This project |
+| --- | --- | --- |
+| app-server owner | The WebUI backend starts an independent `codex app-server` | Codex Desktop starts and owns the only `app-server` |
+| Desktop relationship | Separate runtimes that may compete for one conversation writer | A native Windows bridge makes both surfaces coexist on one service and notification stream |
+| Authoritative state | State belongs to the WebUI-started app-server | The Desktop app-server is the single authority |
+| Two-way synchronization | Desktop and WebUI convergence is not guaranteed | Conversations, messages, streaming, settings, approvals, guidance, queues, interruption, and limits synchronize live |
+| Sign-in and runtime | WebUI reuses local Codex sign-in but launches its own service | WebUI reuses the already signed-in, already running Desktop environment |
+| Desktop exit | WebUI can continue as a separate service | A bridge-owned WebUI follows the Desktop lifecycle |
+
+The phone is therefore not a second Codex instance. It is a remote interface to the same Codex Desktop conversation environment. If the bridge is unavailable, WebUI stays offline instead of silently starting another app-server.
+
 ## Core capabilities
 
 | Capability | Description |
@@ -249,6 +264,10 @@ npm test
 The backend never starts a standalone app-server. The Desktop bridge uses `CODEX_CLI_PATH` to launch the single transparent app-server and exposes request-ID routing plus notification fan-out to the WebUI through an authenticated local named pipe. Browser requests still pass through the method allowlist, conversation filtering, and file/workspace access checks.
 
 See [Architecture](docs/ARCHITECTURE.md) for design, trust boundaries, and compatibility notes, and [LAN and Internet Access](docs/REMOTE_ACCESS.md) for remote deployment. Report vulnerabilities privately under the [Security Policy](SECURITY.md), and read [Contributing](CONTRIBUTING.md) before submitting code.
+
+## Help maintain the project
+
+The current release establishes a usable Desktop-coexistence path. Community help is welcome for mobile interaction details, compatibility across Desktop/app-server versions, accessibility, performance, automated tests, documentation, and security boundaries. Open an Issue with a reproducible problem or clear design goal before sending a focused Pull Request. See [Contributing](CONTRIBUTING.md) for suggested areas and validation requirements.
 
 ## Origin and acknowledgements
 

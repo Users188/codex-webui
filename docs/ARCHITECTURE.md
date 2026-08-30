@@ -14,6 +14,10 @@ Owner-controlled browser
 
 The broker launches the real `codex app-server` once and multiplexes request IDs and notifications between Desktop and WebUI. Both surfaces therefore share one authoritative conversation service. WebUI fails closed when the Desktop bridge is unavailable instead of starting a competing app-server.
 
+## Relationship to the original repository
+
+The referenced original revision starts its own `codex app-server` over stdio from the WebUI backend. This project intentionally removes that independent-owner model. Codex Desktop owns the only app-server process; the bridge multiplexes Desktop and WebUI traffic, and both clients consume the same authoritative notifications. The change is architectural, not only visual: every synchronized conversation, turn, approval, setting, queue, interruption, and rate-limit value comes from the Desktop-owned service.
+
 ## Responsibilities
 
 - Desktop and app-server own Codex authentication, conversations, turns, approvals, queues, settings, and rate-limit state.

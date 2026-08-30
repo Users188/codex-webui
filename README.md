@@ -25,6 +25,21 @@ Codex WebUI 是一个面向 OpenAI Codex 的本地自托管 Web 界面。它通�
 
 Codex Desktop 与普通 WebUI 如果各自启动一个 app-server，就可能出现会话 writer 竞争、状态不一致和引导不同步。本项目通过原生 Windows bridge，让 Desktop 和浏览器共享唯一、权威的 app-server：Desktop 仍然拥有登录和会话，WebUI 只负责安全远程访问和实时呈现。
 
+## 与原始仓库的关键区别
+
+本项目不是给原始 WebUI 换一个主题，而是改变了 Codex 的运行关系：
+
+| | 原始 Codex Mobile / Codex WebUI | 本项目 |
+| --- | --- | --- |
+| app-server 所有者 | WebUI 后端自己启动一套独立 `codex app-server` | Codex Desktop 启动并拥有唯一 `app-server` |
+| 与 Desktop 的关系 | 两套独立运行环境，可能争用同一会话 writer | 原生 Windows bridge 共生，共享同一服务和实时通知流 |
+| 权威状态 | WebUI 自己维护的 app-server 状态 | Desktop 的 app-server 是唯一权威 |
+| 双端同步 | 不保证 Desktop 与 WebUI 实时一致 | 会话、消息、流式回复、设置、审批、引导、列队、停止和额度实时同步 |
+| 登录与运行时 | WebUI 独立复用本机 Codex 登录并拉起服务 | 直接复用 Desktop 已登录、已启动的 Codex 运行环境 |
+| Desktop 退出 | WebUI 可作为独立服务继续存在 | bridge 启动的 WebUI 与 Desktop 生命周期同步 |
+
+因此手机端不是“第二个 Codex”，而是 Codex Desktop 同一会话环境的远程界面。桥接器不可用时 WebUI 会保持离线，不会偷偷启动第二个 app-server。
+
 ## 核心能力
 
 | 能力 | 说明 |
@@ -257,6 +272,10 @@ npm test
 后端不会启动独立 app-server。Desktop bridge 通过 `CODEX_CLI_PATH` 在原生 Windows 中透明启动唯一 app-server，并通过本机认证命名管道把请求 ID 路由和通知扇出提供给 WebUI。网页请求仍经过方法白名单、目录会话过滤和文件/工作区访问校验。
 
 设计、信任边界和兼容性说明见 [架构文档](docs/ARCHITECTURE.md)，远程访问见 [局域网与公网访问指南](docs/REMOTE_ACCESS.md)。安全问题请按 [安全策略](SECURITY.md) 私下报告，贡献代码前请阅读 [贡献指南](CONTRIBUTING.md)。
+
+## 参与维护
+
+当前版本先建立了一条可用的 Desktop 共生路线，欢迎社区继续打磨移动端交互、不同 Desktop/app-server 版本兼容性、无障碍、性能、自动化测试、文档和安全边界。请先开 Issue 描述可复现问题或设计目标，再提交范围清晰的 Pull Request；贡献方向和本地验证要求见 [贡献指南](CONTRIBUTING.md)。
 
 ## 来源与致谢
 

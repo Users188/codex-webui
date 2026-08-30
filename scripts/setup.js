@@ -34,7 +34,6 @@ console.log(`Data directory: ${dataDir}`);
 console.log(`Token store: ${tokenStorePath(dataDir)}`);
 console.log(`Enabled tokens: ${store.tokens.filter((entry) => !entry.disabled).length}`);
 console.log("Command installed: codex-webui");
-console.log("Global skill: not installed (run npm run skill:install to opt in).");
 console.log(`Codex WebUI project folder: ${repoRoot}`);
 console.log("Setup does not register a Codex local project. Open this folder in the Codex desktop app with Ctrl+O.");
 console.log("Setup complete. Install and activate the Desktop bridge, then fully restart Codex Desktop; the bridge starts WebUI automatically.");
