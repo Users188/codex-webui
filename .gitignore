@@ -1,0 +1,14 @@
+node_modules/
+*.log
+*.pid
+.codex-*-uploads/
+.codex-*-inline-images/
+.codex-*-thread-settings.json
+last-scoped-token.txt
+.env
+.DS_Store
+coverage/
+work/
+*.local
+__pycache__/
+*.py[cod]
