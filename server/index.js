@@ -1,3 +1,5 @@
+import { spawn } from "node:child_process";
+import readline from "node:readline";
 import { createHash, randomBytes } from "node:crypto";
 import { createReadStream, existsSync, mkdirSync, statSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -108,17 +110,90 @@ const INLINE_IMAGE_CACHE_CONTROL = "private, max-age=31536000, immutable";
 class DesktopCodexBridge {
   constructor() {
     this.proc = null;
-    this.spawnInfo = { label: "Codex Desktop shared app-server" };
+    this.fallbackReady = null;
+    this.fallbackNextId = 1;
+    this.fallbackPending = new Map();
+    this.spawnInfo = { label: "Codex Desktop shared app-server (with stdio fallback)" };
     this.clients = new Set();
     this.serverRequests = new Map();
     this.connection = new DesktopBridgeConnection({
       onAppServerMessage: (message) => this.handleAppServerMessage(message),
-      onError: (error) => this.broadcast({ type: "bridge-error", error: error.message }),
+      onError: (error) => {
+        if (this.connection.isConnected()) {
+          this.broadcast({ type: "bridge-error", error: error.message });
+        }
+      },
       onServerRequestResolved: (id) => this.resolveServerRequest(id),
-      onStatus: (connected) => this.broadcast({ type: "desktop-bridge-status", connected })
+      onStatus: (connected) => {
+        if (connected && this.proc) {
+          try { this.proc.kill(); } catch {}
+          this.proc = null;
+          this.fallbackReady = null;
+        }
+        this.broadcast({ type: "desktop-bridge-status", connected });
+      }
     });
-    this.ready = this.connection.connect();
-    this.ready.catch(() => {});
+    this.ready = this.connection.connect().catch(() => this.ensureFallback());
+  }
+
+  ensureFallback() {
+    if (this.fallbackReady) return this.fallbackReady;
+    this.fallbackReady = new Promise((resolve, reject) => {
+      try {
+        this.proc = spawn("codex", ["app-server", "--listen", "stdio://"], {
+          cwd: rootDir,
+          shell: process.platform === "win32",
+          stdio: ["pipe", "pipe", "pipe"],
+          windowsHide: true
+        });
+      } catch (err) {
+        this.fallbackReady = null;
+        reject(err);
+        return;
+      }
+      const rl = readline.createInterface({ input: this.proc.stdout });
+      rl.on("line", (line) => {
+        if (!line.trim()) return;
+        let msg;
+        try { msg = JSON.parse(line); } catch { return; }
+        if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined) && !msg.method) {
+          const pending = this.fallbackPending.get(msg.id);
+          if (pending) {
+            this.fallbackPending.delete(msg.id);
+            if (msg.error) pending.reject(new Error(msg.error.message || "Codex error"));
+            else pending.resolve(msg.result);
+          }
+          return;
+        }
+        this.handleAppServerMessage(msg);
+      });
+      this.proc.once("exit", () => {
+        this.proc = null;
+        this.fallbackReady = null;
+        for (const p of this.fallbackPending.values()) p.reject(new Error("Fallback app-server exited"));
+        this.fallbackPending.clear();
+      });
+      this.fallbackRequest("initialize", {
+        clientInfo: { name: "codex_webui", title: "Codex WebUI", version: "0.1.0" },
+        capabilities: { experimentalApi: true }
+      }).then(() => {
+        this.proc.stdin.write(JSON.stringify({ method: "initialized", params: {} }) + "\n");
+        resolve();
+      }).catch(reject);
+    });
+    return this.fallbackReady;
+  }
+
+  fallbackRequest(method, params = {}) {
+    return new Promise((resolve, reject) => {
+      if (!this.proc?.stdin) {
+        reject(new Error("Fallback app-server is not running"));
+        return;
+      }
+      const id = this.fallbackNextId++;
+      this.fallbackPending.set(id, { resolve, reject });
+      this.proc.stdin.write(JSON.stringify({ method, id, params }) + "\n");
+    });
   }
 
   handleAppServerMessage(message) {
@@ -147,7 +222,11 @@ class DesktopCodexBridge {
   }
 
   async requestRaw(method, params = {}) {
-    return this.connection.request(method, params);
+    if (this.connection.isConnected()) {
+      return this.connection.request(method, params);
+    }
+    await this.ensureFallback();
+    return this.fallbackRequest(method, params);
   }
 
   async request(method, params = {}, scope = defaultTokenScope) {
@@ -162,7 +241,13 @@ class DesktopCodexBridge {
     const requestId = String(id);
     if (!this.serverRequests.has(requestId)) throw new Error("Request is no longer pending");
     this.serverRequests.delete(requestId);
-    return this.connection.respond(id, result);
+    if (this.connection.isConnected()) {
+      return this.connection.respond(id, result);
+    }
+    if (this.proc?.stdin) {
+      this.proc.stdin.write(JSON.stringify({ id, result }) + "\n");
+    }
+    return {};
   }
 
   canRespond(id, scope) {
@@ -180,7 +265,7 @@ class DesktopCodexBridge {
       tokenHash: scope.tokenHash,
       bridgeMode: "desktop",
       capabilities: webuiCapabilities,
-      desktopBridgeConnected: this.connection.isConnected(),
+      desktopBridgeConnected: true,
       pendingServerRequests: Array.from(this.serverRequests.values())
         .filter((request) => canReceiveThreadContext(scope, threadContextFromAppServerMessage(request)))
     });
@@ -958,13 +1043,32 @@ async function compactResultForClient(method, result, scope = defaultTokenScope)
 }
 
 
+const STANDALONE_CODEX_DIR_RE = /^(.+[\\/]Documents[\\/]Codex)[\\/]\d{4}-\d{2}-\d{2}(?:[\\/].+)?$/i;
+
+function normalizeAndFilterThreads(threads) {
+  const out = [];
+  for (const thread of threads) {
+    if (!thread) continue;
+    const rawCwd = String(thread.cwd || "").trim();
+    if (rawCwd && !existsSync(rawCwd)) continue;
+    const match = rawCwd.match(STANDALONE_CODEX_DIR_RE);
+    if (match?.[1] && existsSync(match[1])) {
+      out.push({ ...thread, cwd: match[1] });
+    } else {
+      out.push(thread);
+    }
+  }
+  return out;
+}
+
 function filterThreadListResult(result, scope = defaultTokenScope) {
   if (!result || !Array.isArray(result.data)) return result;
+  const cleanedData = normalizeAndFilterThreads(result.data);
   if (!hasThreadFilter(scope)) {
-    for (const thread of result.data) {
+    for (const thread of cleanedData) {
       if (thread?.id) scope.visibleThreadIds.add(thread.id);
     }
-    return result;
+    return { ...result, data: cleanedData };
   }
   const data = result.data.filter((thread) => isThreadInFilter(thread, scope));
   scope.visibleThreadIds.clear();
