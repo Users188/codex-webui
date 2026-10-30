@@ -93,7 +93,7 @@ export function formatCollaborationModeParam(collaborationMode, { model, effort 
   return {
     mode: modeStr,
     settings: {
-      model: model || "",
+      model: model || null,
       reasoning_effort: effort || null,
       developer_instructions: null
     }

@@ -118,7 +118,7 @@ test("buildApprovalDecisions generates fine-grained options for command executio
     method: "item/commandExecution/requestApproval",
     params: {
       command: "npm install foo",
-      proposedExecpolicyAmendment: "npm install *",
+      proposedExecpolicyAmendment: ["npm", "test"],
       proposedNetworkPolicyAmendments: [{ action: "allow", domain: "registry.npmjs.org" }]
     }
   };
@@ -128,7 +128,7 @@ test("buildApprovalDecisions generates fine-grained options for command executio
   assert.equal(decisions[1].id, "acceptForSession");
   assert.equal(decisions[2].id, "amendExec");
   assert.deepEqual(decisions[2].decision, {
-    acceptWithExecpolicyAmendment: { execpolicy_amendment: "npm install *" }
+    acceptWithExecpolicyAmendment: { execpolicy_amendment: ["npm", "test"] }
   });
   assert.equal(decisions[3].id, "amendNet");
   assert.equal(decisions[4].id, "decline");

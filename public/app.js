@@ -1,3 +1,15 @@
+import {
+  parseUnifiedDiff,
+  buildSplitDiffRows,
+  diffFromFileChangeItem,
+  validatePatchPaths
+} from "./diff-review.js";
+import {
+  detectFileMentionTrigger,
+  insertFileMention,
+  normalizeFileTreeEntries,
+  classifyFilePreviewKind
+} from "./file-explorer.js";
 import { currentLocale, initI18n, t } from "./i18n.js";
 import {
   extractProposedPlan,
@@ -92,6 +104,16 @@ const state = {
   tokenUsage: null,
   tokenRole: "",
   activePlan: null,
+  sidePanelOpen: false,
+  activeSideTab: "review",
+  diffViewMode: "unified",
+  currentDiff: "",
+  currentFileTreePath: "",
+  fileTreeEntries: [],
+  activePreviewFilePath: "",
+  fileMentionTrigger: null,
+  fileMentionItems: [],
+  fileMentionSelectedIndex: 0,
   token: null,
   authMode: "",
   nextRequestId: 1,
@@ -248,6 +270,31 @@ const els = {
   archiveThreadBtn: document.querySelector("#archiveThreadBtn"),
   deleteThreadBtn: document.querySelector("#deleteThreadBtn"),
   toggleArchivedThreads: document.querySelector("#toggleArchivedThreads"),
+  startReviewBtn: document.querySelector("#startReviewBtn"),
+  toggleSidePanel: document.querySelector("#toggleSidePanel"),
+  diffCountBadge: document.querySelector("#diffCountBadge"),
+  taskSidePanel: document.querySelector("#taskSidePanel"),
+  sidePanelResizer: document.querySelector("#sidePanelResizer"),
+  sideTabReview: document.querySelector("#sideTabReview"),
+  sideTabFiles: document.querySelector("#sideTabFiles"),
+  sideTabAgents: document.querySelector("#sideTabAgents"),
+  closeSidePanel: document.querySelector("#closeSidePanel"),
+  sidePanelReview: document.querySelector("#sidePanelReview"),
+  diffViewModeBtn: document.querySelector("#diffViewModeBtn"),
+  diffViewModeLabel: document.querySelector("#diffViewModeLabel"),
+  refreshGitDiffBtn: document.querySelector("#refreshGitDiffBtn"),
+  undoPatchBtn: document.querySelector("#undoPatchBtn"),
+  reapplyPatchBtn: document.querySelector("#reapplyPatchBtn"),
+  diffViewerContainer: document.querySelector("#diffViewerContainer"),
+  sidePanelFiles: document.querySelector("#sidePanelFiles"),
+  fileTreeUpBtn: document.querySelector("#fileTreeUpBtn"),
+  fileTreeRefreshBtn: document.querySelector("#fileTreeRefreshBtn"),
+  fileTreeBreadcrumb: document.querySelector("#fileTreeBreadcrumb"),
+  fileTreeList: document.querySelector("#fileTreeList"),
+  filePreviewContainer: document.querySelector("#filePreviewContainer"),
+  sidePanelAgents: document.querySelector("#sidePanelAgents"),
+  agentsPanelContent: document.querySelector("#agentsPanelContent"),
+  fileMentionMenu: document.querySelector("#fileMentionMenu"),
   authPanel: document.querySelector("#authPanel"),
   authText: document.querySelector("#authText"),
   deviceLogin: document.querySelector("#deviceLogin"),
@@ -558,6 +605,59 @@ function bindUi() {
       showToast({ kind: "failed", title: err.message || t("common.failed") });
     }
   });
+  els.toggleSidePanel?.addEventListener("click", () => toggleSidePanel());
+  els.closeSidePanel?.addEventListener("click", () => toggleSidePanel(false));
+  els.sideTabReview?.addEventListener("click", () => switchSideTab("review"));
+  els.sideTabFiles?.addEventListener("click", () => switchSideTab("files"));
+  els.sideTabAgents?.addEventListener("click", () => switchSideTab("agents"));
+  els.startReviewBtn?.addEventListener("click", startCodeReview);
+  els.diffViewModeBtn?.addEventListener("click", () => {
+    state.diffViewMode = state.diffViewMode === "unified" ? "split" : "unified";
+    if (els.diffViewModeLabel) {
+      els.diffViewModeLabel.textContent = t(state.diffViewMode === "unified" ? "diff.viewUnified" : "diff.viewSplit");
+    }
+    renderDiffViewer(state.currentDiff);
+  });
+  els.refreshGitDiffBtn?.addEventListener("click", refreshGitDiff);
+  els.undoPatchBtn?.addEventListener("click", undoGitPatch);
+  els.reapplyPatchBtn?.addEventListener("click", reapplyGitPatch);
+  els.fileTreeUpBtn?.addEventListener("click", () => {
+    if (!state.currentFileTreePath) return;
+    const parts = state.currentFileTreePath.replace(/\\/g, "/").split("/").filter(Boolean);
+    if (parts.length > 1) {
+      parts.pop();
+      loadFileDirectory(parts.join("/"));
+    }
+  });
+  els.fileTreeRefreshBtn?.addEventListener("click", () => {
+    loadFileDirectory(state.currentFileTreePath);
+  });
+  setupSidePanelResizer();
+
+  els.promptInput?.addEventListener("input", handlePromptInputMention);
+  els.promptInput?.addEventListener("keydown", (event) => {
+    if (els.fileMentionMenu && !els.fileMentionMenu.classList.contains("hidden") && state.fileMentionItems.length) {
+      if (event.key === "ArrowDown") {
+        state.fileMentionSelectedIndex = (state.fileMentionSelectedIndex + 1) % Math.min(state.fileMentionItems.length, 8);
+        renderFileMentionMenu();
+        event.preventDefault();
+      } else if (event.key === "ArrowUp") {
+        state.fileMentionSelectedIndex = (state.fileMentionSelectedIndex - 1 + Math.min(state.fileMentionItems.length, 8)) % Math.min(state.fileMentionItems.length, 8);
+        renderFileMentionMenu();
+        event.preventDefault();
+      } else if (event.key === "Enter" || event.key === "Tab") {
+        const item = state.fileMentionItems[state.fileMentionSelectedIndex];
+        if (item) {
+          applyFileMention(item.path || item.name || "");
+          event.preventDefault();
+        }
+      } else if (event.key === "Escape") {
+        els.fileMentionMenu.classList.add("hidden");
+        state.fileMentionTrigger = null;
+      }
+    }
+  });
+
   els.deleteThreadBtn?.addEventListener("click", async () => {
     if (!state.currentThread?.id) return;
     if (!window.confirm(t("thread.deleteConfirm"))) return;
@@ -4073,6 +4173,21 @@ function handleNotification(notification) {
     return;
   }
 
+  if (method === "turn/diff/updated") {
+    state.currentDiff = params.diff || "";
+    renderDiffViewer(state.currentDiff);
+    return;
+  }
+
+  if (method === "item/fileChange/patchUpdated") {
+    const patch = params.patch || (diffFromFileChangeItem ? diffFromFileChangeItem(params) : "");
+    if (patch) {
+      state.currentDiff = (state.currentDiff ? state.currentDiff + "\n" : "") + patch;
+      renderDiffViewer(state.currentDiff);
+    }
+    return;
+  }
+
   if (method === "turn/plan/updated") {
     if (params.threadId !== state.currentThread?.id) return;
     const normalized = normalizePlanSteps({ explanation: params.explanation, plan: params.plan });
@@ -4504,6 +4619,537 @@ function renderPlanProgressBar(planData) {
       ${stepsHtml}
     </ul>
   `;
+}
+
+function toggleSidePanel(force) {
+  if (!els.taskSidePanel) return;
+  state.sidePanelOpen = typeof force === "boolean" ? force : !state.sidePanelOpen;
+  els.taskSidePanel.classList.toggle("hidden", !state.sidePanelOpen);
+  if (els.toggleSidePanel) {
+    els.toggleSidePanel.classList.toggle("active", state.sidePanelOpen);
+  }
+  if (state.sidePanelOpen) {
+    if (state.activeSideTab === "review") {
+      refreshSidePanelReview();
+    } else if (state.activeSideTab === "files") {
+      loadFileDirectory(state.currentFileTreePath || currentEffectiveCwd());
+    } else if (state.activeSideTab === "agents") {
+      renderSidePanelAgents();
+    }
+  }
+}
+
+function switchSideTab(tabName) {
+  state.activeSideTab = tabName;
+  const tabs = [
+    { name: "review", btn: els.sideTabReview, panel: els.sidePanelReview },
+    { name: "files", btn: els.sideTabFiles, panel: els.sidePanelFiles },
+    { name: "agents", btn: els.sideTabAgents, panel: els.sidePanelAgents }
+  ];
+  for (const tab of tabs) {
+    const isActive = tab.name === tabName;
+    if (tab.btn) {
+      tab.btn.classList.toggle("active", isActive);
+      tab.btn.setAttribute("aria-selected", isActive ? "true" : "false");
+    }
+    if (tab.panel) {
+      tab.panel.classList.toggle("hidden", !isActive);
+    }
+  }
+  if (tabName === "review") {
+    refreshSidePanelReview();
+  } else if (tabName === "files") {
+    if (!state.fileTreeEntries.length) {
+      loadFileDirectory(state.currentFileTreePath || currentEffectiveCwd());
+    }
+  } else if (tabName === "agents") {
+    renderSidePanelAgents();
+  }
+}
+
+function refreshSidePanelReview() {
+  if (state.currentDiff) {
+    renderDiffViewer(state.currentDiff);
+  } else {
+    refreshGitDiff().catch(() => {});
+  }
+}
+
+function renderDiffViewer(diffText) {
+  state.currentDiff = diffText || "";
+  if (!els.diffViewerContainer) return;
+  let files = [];
+  try {
+    files = parseUnifiedDiff(state.currentDiff) || [];
+  } catch (_) {
+    files = [];
+  }
+
+  const count = files.length;
+  if (els.diffCountBadge) {
+    els.diffCountBadge.textContent = String(count);
+    els.diffCountBadge.classList.toggle("hidden", count === 0);
+  }
+
+  if (count === 0) {
+    els.diffViewerContainer.innerHTML = `<div class="side-panel-empty">${escapeHtml(t("diff.empty"))}</div>`;
+    return;
+  }
+
+  els.diffViewerContainer.innerHTML = "";
+  for (const file of files) {
+    const card = document.createElement("div");
+    card.className = "diff-file-card";
+    const filePath = file.path || file.newPath || file.oldPath || "unknown";
+    const addedCount = typeof file.additions === "number" ? file.additions : 0;
+    const delCount = typeof file.deletions === "number" ? file.deletions : 0;
+
+    const header = document.createElement("div");
+    header.className = "diff-file-header";
+    header.innerHTML = `
+      <div class="diff-file-path">
+        <span>📄</span>
+        <span>${escapeHtml(filePath)}</span>
+      </div>
+      <div class="diff-file-stats">
+        <span class="diff-stat-add">+${addedCount}</span>
+        <span class="diff-stat-del">-${delCount}</span>
+      </div>
+    `;
+
+    const body = document.createElement("div");
+    body.className = "diff-file-body";
+
+    if (state.diffViewMode === "split") {
+      const table = document.createElement("table");
+      table.className = "diff-split-table";
+      const tbody = document.createElement("tbody");
+
+      for (const hunk of file.hunks || []) {
+        const hunkTr = document.createElement("tr");
+        hunkTr.className = "diff-row hunk";
+        hunkTr.innerHTML = `
+          <td class="diff-split-cell hunk" colspan="2">
+            <span class="diff-line-content">${escapeHtml(hunk.header || "")}</span>
+          </td>
+        `;
+        tbody.append(hunkTr);
+
+        let splitRows = [];
+        try {
+          splitRows = buildSplitDiffRows(hunk) || [];
+        } catch (_) {
+          splitRows = [];
+        }
+
+        for (const row of splitRows) {
+          const tr = document.createElement("tr");
+          tr.className = "diff-row";
+          const leftTd = document.createElement("td");
+          leftTd.className = `diff-split-cell ${row.left?.type || ""}`;
+          leftTd.innerHTML = `
+            <span class="diff-line-num">${row.left?.line ?? ""}</span>
+            <span class="diff-line-content">${escapeHtml(row.left?.content ?? "")}</span>
+          `;
+          const rightTd = document.createElement("td");
+          rightTd.className = `diff-split-cell ${row.right?.type || ""}`;
+          rightTd.innerHTML = `
+            <span class="diff-line-num">${row.right?.line ?? ""}</span>
+            <span class="diff-line-content">${escapeHtml(row.right?.content ?? "")}</span>
+          `;
+          tr.append(leftTd, rightTd);
+          tbody.append(tr);
+        }
+      }
+      table.append(tbody);
+      body.append(table);
+    } else {
+      const table = document.createElement("table");
+      table.className = "diff-table";
+      const tbody = document.createElement("tbody");
+
+      for (const hunk of file.hunks || []) {
+        const hunkTr = document.createElement("tr");
+        hunkTr.className = "diff-row hunk";
+        hunkTr.innerHTML = `
+          <td class="diff-line-num">...</td>
+          <td class="diff-line-content">${escapeHtml(hunk.header || "")}</td>
+        `;
+        tbody.append(hunkTr);
+
+        for (const line of hunk.lines || []) {
+          const tr = document.createElement("tr");
+          tr.className = `diff-row ${line.type || "context"}`;
+          const lineNum = line.type === "del" ? (line.oldLine ?? "") : (line.newLine ?? "");
+          tr.innerHTML = `
+            <td class="diff-line-num">${lineNum}</td>
+            <td class="diff-line-content">${escapeHtml(line.content || "")}</td>
+          `;
+          tbody.append(tr);
+        }
+      }
+      table.append(tbody);
+      body.append(table);
+    }
+
+    header.addEventListener("click", () => {
+      body.classList.toggle("hidden");
+    });
+
+    card.append(header, body);
+    els.diffViewerContainer.append(card);
+  }
+}
+
+async function refreshGitDiff() {
+  const cwd = currentEffectiveCwd();
+  if (!cwd) return;
+  try {
+    const result = await rpc("gitDiffToRemote", { cwd });
+    const diff = result?.diff || (typeof result === "string" ? result : "");
+    if (diff) {
+      renderDiffViewer(diff);
+    }
+  } catch (_) {}
+}
+
+async function undoGitPatch() {
+  const cwd = currentEffectiveCwd();
+  if (!state.currentDiff) return;
+  try {
+    const res = await fetch(authenticatedUrl("/api/git/apply", state.token), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        cwd,
+        patch: state.currentDiff,
+        mode: "undo",
+        threadId: state.currentThread?.id || ""
+      })
+    });
+    if (res.ok) {
+      showToast({ kind: "completed", title: t("diff.undoSuccess") });
+      await refreshGitDiff();
+    } else {
+      const err = await res.json().catch(() => ({}));
+      showToast({ kind: "failed", title: err.error || t("diff.undoFailed") });
+    }
+  } catch (e) {
+    showToast({ kind: "failed", title: e.message || t("diff.undoFailed") });
+  }
+}
+
+async function reapplyGitPatch() {
+  const cwd = currentEffectiveCwd();
+  if (!state.currentDiff) return;
+  try {
+    const res = await fetch(authenticatedUrl("/api/git/apply", state.token), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        cwd,
+        patch: state.currentDiff,
+        mode: "apply",
+        threadId: state.currentThread?.id || ""
+      })
+    });
+    if (res.ok) {
+      showToast({ kind: "completed", title: t("diff.reapplySuccess") });
+      await refreshGitDiff();
+    } else {
+      const err = await res.json().catch(() => ({}));
+      showToast({ kind: "failed", title: err.error || t("diff.reapplyFailed") });
+    }
+  } catch (e) {
+    showToast({ kind: "failed", title: e.message || t("diff.reapplyFailed") });
+  }
+}
+
+async function startCodeReview() {
+  if (!state.currentThread?.id) return;
+  try {
+    await rpc("review/start", {
+      threadId: state.currentThread.id,
+      target: { type: "uncommittedChanges" }
+    });
+    toggleSidePanel(true);
+    switchSideTab("review");
+    showToast({ kind: "completed", title: t("review.startTitle") });
+  } catch (e) {
+    showToast({ kind: "failed", title: e.message || t("common.failed") });
+  }
+}
+
+async function loadFileDirectory(dirPath) {
+  state.currentFileTreePath = dirPath || currentEffectiveCwd();
+  if (els.fileTreeBreadcrumb) {
+    els.fileTreeBreadcrumb.textContent = shortPath(state.currentFileTreePath);
+    els.fileTreeBreadcrumb.title = state.currentFileTreePath;
+  }
+  if (!els.fileTreeList) return;
+  els.fileTreeList.innerHTML = `<div class="side-panel-empty">${escapeHtml(t("load.opening"))}</div>`;
+
+  try {
+    const result = await rpc("fs/readDirectory", { path: state.currentFileTreePath });
+    const rawEntries = result?.entries || (Array.isArray(result) ? result : []);
+    const mapped = rawEntries.map((e) => ({
+      name: e.fileName || e.name || "",
+      isDirectory: Boolean(e.isDirectory || e.type === "directory" || e.kind === "directory"),
+      ...e
+    }));
+    const entries = normalizeFileTreeEntries
+      ? normalizeFileTreeEntries(mapped, state.currentFileTreePath)
+      : mapped;
+    state.fileTreeEntries = entries;
+    renderFileTreeList(entries);
+  } catch (err) {
+    els.fileTreeList.innerHTML = `<div class="side-panel-empty">${escapeHtml(t("files.loadFailed"))}</div>`;
+  }
+}
+
+function renderFileTreeList(entries) {
+  if (!els.fileTreeList) return;
+  els.fileTreeList.innerHTML = "";
+  if (!entries || entries.length === 0) {
+    els.fileTreeList.innerHTML = `<div class="side-panel-empty">${escapeHtml(t("files.empty"))}</div>`;
+    return;
+  }
+
+  for (const entry of entries) {
+    const item = document.createElement("div");
+    item.className = "file-tree-item";
+    const isDir = entry.isDirectory || entry.type === "directory";
+    item.innerHTML = `
+      <span class="file-tree-icon">${isDir ? "📁" : "📄"}</span>
+      <span class="file-tree-name" title="${escapeHtml(entry.path || entry.name)}">${escapeHtml(entry.name || entry.path)}</span>
+    `;
+    item.addEventListener("click", () => {
+      if (isDir) {
+        loadFileDirectory(entry.path);
+      } else {
+        loadFilePreview(entry.path);
+      }
+    });
+    els.fileTreeList.append(item);
+  }
+}
+
+async function loadFilePreview(filePath) {
+  state.activePreviewFilePath = filePath;
+  if (!els.filePreviewContainer) return;
+  els.filePreviewContainer.classList.remove("hidden");
+  els.filePreviewContainer.innerHTML = `
+    <header class="file-preview-header">
+      <span class="file-preview-name">${escapeHtml(shortPath(filePath))}</span>
+      <div class="field-action-row">
+        <button class="secondary-action compact-action" id="insertMentionBtn" type="button" title="${escapeHtml(t("files.insertMention"))}">
+          @
+        </button>
+        <button class="icon-button" id="closePreviewBtn" type="button">×</button>
+      </div>
+    </header>
+    <div class="file-preview-body">${escapeHtml(t("load.opening"))}</div>
+  `;
+
+  els.filePreviewContainer.querySelector("#insertMentionBtn")?.addEventListener("click", () => {
+    insertFilePathToComposer(filePath);
+  });
+  els.filePreviewContainer.querySelector("#closePreviewBtn")?.addEventListener("click", () => {
+    els.filePreviewContainer.classList.add("hidden");
+  });
+
+  try {
+    const result = await rpc("fs/readFile", { path: filePath });
+    const previewKind = classifyFilePreviewKind(filePath);
+    const body = els.filePreviewContainer.querySelector(".file-preview-body");
+    if (!body) return;
+
+    let textContent = "";
+    if (result?.dataBase64) {
+      if (previewKind.kind === "image") {
+        const mimeSub = previewKind.language === "svg" ? "svg+xml" : (previewKind.language || "png");
+        body.innerHTML = `<img class="file-preview-image" src="data:image/${escapeHtml(mimeSub)};base64,${escapeHtml(result.dataBase64)}" alt="${escapeHtml(filePath)}" />`;
+        return;
+      }
+      try {
+        const binStr = atob(result.dataBase64);
+        const bytes = Uint8Array.from(binStr, (c) => c.charCodeAt(0));
+        textContent = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+      } catch (_) {
+        textContent = result.dataBase64;
+      }
+    } else {
+      textContent = result?.content ?? result?.data ?? result?.text ?? "";
+    }
+
+    if (previewKind.kind === "markdown") {
+      body.innerHTML = renderMarkdown(textContent);
+    } else {
+      body.innerHTML = `<code>${escapeHtml(textContent)}</code>`;
+    }
+  } catch (e) {
+    const body = els.filePreviewContainer.querySelector(".file-preview-body");
+    if (body) body.textContent = t("files.loadFailed");
+  }
+}
+
+function insertFilePathToComposer(filePath) {
+  if (!els.promptInput) return;
+  const currentVal = els.promptInput.value;
+  const mention = `@${filePath} `;
+  if (!currentVal) {
+    els.promptInput.value = mention;
+  } else {
+    els.promptInput.value = currentVal.endsWith(" ") ? `${currentVal}${mention}` : `${currentVal} ${mention}`;
+  }
+  els.promptInput.focus();
+}
+
+function renderSidePanelAgents() {
+  if (!els.agentsPanelContent) return;
+  if (state.activePlan && state.activePlan.steps?.length) {
+    const pct = state.activePlan.totalCount > 0
+      ? Math.round((state.activePlan.completedCount / state.activePlan.totalCount) * 100)
+      : 0;
+    const stepsHtml = (state.activePlan.steps || []).map((step) => {
+      let icon = "○";
+      if (step.status === "completed") icon = "✓";
+      else if (step.status === "in_progress") icon = "●";
+      return `
+        <li class="plan-step-item ${escapeHtml(step.status)}">
+          <span class="plan-step-icon">${icon}</span>
+          <span class="plan-step-text">${escapeHtml(step.step)}</span>
+        </li>
+      `;
+    }).join("");
+
+    els.agentsPanelContent.innerHTML = `
+      <div class="plan-progress-panel" style="margin: 0; border: none;">
+        <div class="plan-progress-header">
+          <span>${escapeHtml(t("plan.progress", { completed: state.activePlan.completedCount, total: state.activePlan.totalCount }))}</span>
+          <span>${pct}%</span>
+        </div>
+        <div class="plan-progress-track">
+          <div class="plan-progress-fill" style="width: ${pct}%;"></div>
+        </div>
+        <ul class="plan-steps-list">
+          ${stepsHtml}
+        </ul>
+      </div>
+    `;
+  } else {
+    els.agentsPanelContent.innerHTML = `<div class="side-panel-empty">${escapeHtml(t("agents.empty"))}</div>`;
+  }
+}
+
+function setupSidePanelResizer() {
+  if (!els.sidePanelResizer || !els.taskSidePanel) return;
+  let startX = 0;
+  let startWidth = 0;
+
+  const onMouseMove = (e) => {
+    const delta = startX - e.clientX;
+    const newWidth = Math.min(Math.max(startWidth + delta, 320), 800);
+    els.taskSidePanel.style.width = `${newWidth}px`;
+  };
+
+  const onMouseUp = () => {
+    els.sidePanelResizer.classList.remove("resizing");
+    document.removeEventListener("mousemove", onMouseMove);
+    document.removeEventListener("mouseup", onMouseUp);
+  };
+
+  els.sidePanelResizer.addEventListener("mousedown", (e) => {
+    startX = e.clientX;
+    startWidth = els.taskSidePanel.getBoundingClientRect().width;
+    els.sidePanelResizer.classList.add("resizing");
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+  });
+}
+
+async function handlePromptInputMention() {
+  if (!els.promptInput || !els.fileMentionMenu) return;
+  const val = els.promptInput.value;
+  const cursor = els.promptInput.selectionStart;
+  const trigger = detectFileMentionTrigger ? detectFileMentionTrigger(val, cursor) : null;
+  state.fileMentionTrigger = trigger;
+
+  if (!trigger || !trigger.active) {
+    els.fileMentionMenu.classList.add("hidden");
+    return;
+  }
+
+  const query = trigger.query || "";
+  let matches = [];
+  try {
+    const res = await rpc("fuzzyFileSearch", { query, roots: [currentEffectiveCwd()] });
+    const rawList = res?.files || res?.matches || (Array.isArray(res) ? res : []);
+    const cwd = currentEffectiveCwd().replace(/\\/g, "/").replace(/\/+$/, "");
+    matches = rawList.map((item) => {
+      const p = String(item.path || item.file_name || item.fileName || item);
+      const normalized = p.replace(/\\/g, "/");
+      let display = normalized;
+      if (cwd && normalized.toLowerCase().startsWith(cwd.toLowerCase() + "/")) {
+        display = normalized.slice(cwd.length + 1);
+      }
+      return { path: display, fullPath: p, name: item.file_name || item.fileName || display };
+    });
+  } catch (_) {
+    matches = [];
+  }
+
+  if (!matches.length && state.fileTreeEntries.length) {
+    matches = state.fileTreeEntries
+      .filter((e) => !query || (e.name && e.name.toLowerCase().includes(query.toLowerCase())))
+      .map((e) => ({ path: e.path, name: e.name }));
+  }
+
+  state.fileMentionItems = matches;
+  state.fileMentionSelectedIndex = 0;
+
+  if (!matches.length) {
+    els.fileMentionMenu.innerHTML = `<div class="side-panel-empty">${escapeHtml(t("mention.empty"))}</div>`;
+    els.fileMentionMenu.classList.remove("hidden");
+    return;
+  }
+
+  renderFileMentionMenu();
+}
+
+function renderFileMentionMenu() {
+  if (!els.fileMentionMenu) return;
+  els.fileMentionMenu.innerHTML = "";
+  els.fileMentionMenu.classList.remove("hidden");
+
+  state.fileMentionItems.slice(0, 8).forEach((item, index) => {
+    const el = document.createElement("div");
+    el.className = `file-mention-item ${index === state.fileMentionSelectedIndex ? "selected" : ""}`;
+    el.innerHTML = `
+      <span>📄</span>
+      <span class="file-mention-path">${escapeHtml(item.path || item.name || "")}</span>
+    `;
+    el.addEventListener("click", () => {
+      applyFileMention(item.path || item.name || "");
+    });
+    els.fileMentionMenu.append(el);
+  });
+}
+
+function applyFileMention(chosenPath) {
+  if (!els.promptInput || !state.fileMentionTrigger) return;
+  const val = els.promptInput.value;
+  const res = insertFileMention(val, state.fileMentionTrigger, chosenPath);
+  if (res && typeof res.text === "string") {
+    els.promptInput.value = res.text;
+    const cur = typeof res.cursor === "number" ? res.cursor : res.text.length;
+    els.promptInput.setSelectionRange(cur, cur);
+  } else {
+    insertFilePathToComposer(chosenPath);
+  }
+  els.fileMentionMenu.classList.add("hidden");
+  state.fileMentionTrigger = null;
+  els.promptInput.focus();
 }
 
 function applyTokenRoleUi() {

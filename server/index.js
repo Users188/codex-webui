@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import readline from "node:readline";
 import { createHash, randomBytes } from "node:crypto";
-import { createReadStream, existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
+import { createReadStream, existsSync, lstatSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import os from "node:os";
@@ -26,6 +26,7 @@ import { canReceiveThreadContext } from "./thread-notification-scope.js";
 import { createWorkspaceDirectory, listWorkspaceDirectories } from "./workspace-browser.js";
 import { CloudflareAccessAuthenticator, readCloudflareAccessConfig } from "./cloudflare-access.js";
 import { DesktopStateManager } from "./desktop-state.js";
+import { validatePatchPaths } from "../public/diff-review.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -141,6 +142,8 @@ class DesktopCodexBridge {
     this.spawnInfo = { label: "Codex Desktop shared app-server (with stdio fallback)" };
     this.clients = new Set();
     this.serverRequests = new Map();
+    this.activeTurnsByThread = new Map();
+    this.threadCwds = new Map();
     this.connection = new DesktopBridgeConnection({
       onAppServerMessage: (message) => this.handleAppServerMessage(message),
       onError: (error) => {
@@ -222,6 +225,18 @@ class DesktopCodexBridge {
   }
 
   handleAppServerMessage(message) {
+    const notifMethod = message?.method;
+    const threadId = message?.params?.threadId || message?.params?.thread?.id;
+    const cwd = message?.params?.thread?.cwd || message?.params?.cwd;
+    if (threadId && cwd) {
+      this.threadCwds.set(threadId, normalizeLocalPath(cwd));
+    }
+    if (notifMethod === "turn/started" && threadId) {
+      this.activeTurnsByThread.set(threadId, message.params?.turn?.id || "active");
+    } else if (notifMethod === "turn/completed" && threadId) {
+      this.activeTurnsByThread.delete(threadId);
+    }
+
     if (message?.id !== undefined && message?.method) {
       if (!isWebUserServerRequest(message.method)) return;
       this.serverRequests.set(String(message.id), message);
@@ -260,10 +275,21 @@ class DesktopCodexBridge {
     if (!isRpcMethodAllowedForRole(method, role)) {
       throw new Error(`Role ${scope?.role} is not allowed to call: ${method}`);
     }
-    return this.requestRaw(
+    const rawRes = await this.requestRaw(
       method,
       sanitizeDesktopBridgeParams(method, normalizeParams(method, params, scope))
     );
+    const thread = rawRes?.thread || (rawRes?.id && rawRes?.cwd ? rawRes : null);
+    if (thread?.id && thread?.cwd) {
+      this.threadCwds.set(thread.id, normalizeLocalPath(thread.cwd));
+    }
+    if (method === "turn/start") {
+      const targetThreadId = params?.threadId || params?.id;
+      if (targetThreadId) {
+        this.activeTurnsByThread.set(targetThreadId, "pending");
+      }
+    }
+    return rawRes;
   }
 
   async respond(id, result) {
@@ -519,6 +545,133 @@ const server = createServer(async (req, res) => {
       sendJson(res, { workspace: entry });
       return;
     }
+
+    if (url.pathname === "/api/git/apply" && req.method === "POST") {
+      const scope = await resolveRequestScope(req, url);
+      if (!scope) {
+        sendJsonStatus(res, 401, { error: "Unauthorized" });
+        return;
+      }
+      if ((scope?.role || "readonly") === "readonly") {
+        sendJsonStatus(res, 403, { error: "Readonly token is not allowed to perform write operations." });
+        return;
+      }
+      recordHttpUsage(scope, req);
+
+      let body;
+      try {
+        body = JSON.parse((await readRequestBody(req, 10 * 1024 * 1024)).toString("utf8") || "{}");
+      } catch {
+        sendJsonStatus(res, 400, { error: "Invalid JSON payload" });
+        return;
+      }
+
+      const { cwd, patch, mode = "apply", threadId } = body;
+      if (mode !== "apply" && mode !== "undo") {
+        sendJsonStatus(res, 400, { error: "mode must be 'apply' or 'undo'" });
+        return;
+      }
+      if (!patch || typeof patch !== "string" || !patch.trim()) {
+        sendJsonStatus(res, 400, { error: "patch cannot be empty" });
+        return;
+      }
+      if (!cwd || typeof cwd !== "string") {
+        sendJsonStatus(res, 400, { error: "cwd is required" });
+        return;
+      }
+
+      const resolvedCwd = normalizeLocalPath(cwd);
+      if (!existsSync(resolvedCwd) || !statSync(resolvedCwd).isDirectory()) {
+        sendJsonStatus(res, 400, { error: "Working directory does not exist or is not a directory." });
+        return;
+      }
+
+      // B6: Active turn conflict check (HTTP 409)
+      const targetThreadId = threadId || body.thread_id;
+      let hasActiveTurnConflict = false;
+      if (targetThreadId && bridge.activeTurnsByThread.has(targetThreadId)) {
+        hasActiveTurnConflict = true;
+      }
+      if (!hasActiveTurnConflict) {
+        for (const [activeThreadId] of bridge.activeTurnsByThread.entries()) {
+          const activeCwd = bridge.threadCwds.get(activeThreadId);
+          if (activeCwd) {
+            if (resolvedCwd === activeCwd || isPathInside(resolvedCwd, activeCwd) || isPathInside(activeCwd, resolvedCwd)) {
+              hasActiveTurnConflict = true;
+              break;
+            }
+          }
+        }
+      }
+      if (hasActiveTurnConflict) {
+        sendJsonStatus(res, 409, { error: "Cannot apply or undo patch while a turn is active in this workspace." });
+        return;
+      }
+
+      if (hasThreadFilter(scope)) {
+        if (!isPathAllowedInScope(scope, resolvedCwd)) {
+          sendJsonStatus(res, 403, { error: "This token can only access sessions in the allowed folder." });
+          return;
+        }
+        try {
+          const realCwd = realpathSync(resolvedCwd);
+          if (!isPathAllowedInScope(scope, realCwd)) {
+            sendJsonStatus(res, 403, { error: "This token can only access sessions in the allowed folder." });
+            return;
+          }
+        } catch {
+          sendJsonStatus(res, 403, { error: "This token can only access sessions in the allowed folder." });
+          return;
+        }
+      }
+
+      // Validate patch paths syntax and sensitivity (B5, B7)
+      const pathCheck = validatePatchPaths(patch);
+      if (!pathCheck.valid) {
+        sendJsonStatus(res, 400, { error: pathCheck.reason });
+        return;
+      }
+
+      // B4: Check each prefix segment from realCwd down to prevent junction / symlink escapes
+      const realCwd = realpathSync(resolvedCwd);
+      for (const targetPath of pathCheck.paths) {
+        const segments = targetPath.split(/[\\/]/).filter(Boolean);
+        let currentPrefix = resolvedCwd;
+        for (const seg of segments) {
+          currentPrefix = path.join(currentPrefix, seg);
+          if (existsSync(currentPrefix)) {
+            try {
+              const stat = lstatSync(currentPrefix);
+              if (stat.isSymbolicLink()) {
+                sendJsonStatus(res, 400, { error: `Symlink escape detected: ${targetPath}` });
+                return;
+              }
+              const realPrefix = realpathSync(currentPrefix);
+              if (!isPathInside(realCwd, realPrefix)) {
+                sendJsonStatus(res, 400, { error: `Symlink escape detected: ${targetPath}` });
+                return;
+              }
+            } catch {
+              sendJsonStatus(res, 400, { error: `Cannot verify target path: ${targetPath}` });
+              return;
+            }
+          }
+        }
+      }
+
+      try {
+        const result = await executeGitApply({ cwd: resolvedCwd, patch, mode });
+        if (result.ok) {
+          sendJson(res, { ok: true, mode });
+        } else {
+          sendJsonStatus(res, 400, { error: result.error });
+        }
+      } catch (err) {
+        sendJsonStatus(res, 400, { error: err.message || "Failed to apply git patch" });
+      }
+      return;
+    }
+
 
     if (vendorFiles.has(url.pathname)) {
       const vendorPath = vendorFiles.get(url.pathname);
@@ -1489,6 +1642,57 @@ function imageMimeFromBase64(value) {
   if (value.startsWith("R0lGOD")) return "image/gif";
   if (value.startsWith("UklGR")) return "image/webp";
   return "";
+}
+
+function runGitCommand(args, cwd, stdinText) {
+  return new Promise((resolve) => {
+    let stdout = "";
+    let stderr = "";
+    let child;
+    try {
+      child = spawn("git", args, {
+        cwd,
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true
+      });
+    } catch (err) {
+      return resolve({ code: -1, stdout: "", stderr: err.message });
+    }
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString("utf8");
+    });
+    child.on("error", (err) => {
+      resolve({ code: -1, stdout, stderr: err.message });
+    });
+    child.on("close", (code) => {
+      resolve({ code: code ?? -1, stdout, stderr });
+    });
+
+    if (stdinText) {
+      child.stdin.write(stdinText);
+    }
+    child.stdin.end();
+  });
+}
+
+export async function executeGitApply({ cwd, patch, mode = "apply" }) {
+  const checkArgs = mode === "undo" ? ["apply", "--check", "--reverse"] : ["apply", "--check"];
+  const checkRes = await runGitCommand(checkArgs, cwd, patch);
+  if (checkRes.code !== 0) {
+    return { ok: false, error: checkRes.stderr.trim() || checkRes.stdout.trim() || "git apply --check failed" };
+  }
+
+  const applyArgs = mode === "undo" ? ["apply", "--reverse"] : ["apply"];
+  const applyRes = await runGitCommand(applyArgs, cwd, patch);
+  if (applyRes.code !== 0) {
+    return { ok: false, error: applyRes.stderr.trim() || applyRes.stdout.trim() || "git apply failed" };
+  }
+
+  return { ok: true, mode };
 }
 
 function normalizeLocalPath(value) {
