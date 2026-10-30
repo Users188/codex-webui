@@ -24,6 +24,17 @@ export function getLanUrls(port, networkInterfaces = os.networkInterfaces()) {
   return urls.length ? [...new Set(urls)] : [`http://localhost:${port}`];
 }
 
+export function isTailscaleAddress(address) {
+  if (!address) return false;
+  const clean = String(address).startsWith("::ffff:") ? String(address).slice(7) : String(address);
+  const octets = ipv4Octets(clean);
+  if (octets) {
+    const [first, second] = octets;
+    return first === 100 && second >= 64 && second <= 127;
+  }
+  return /^fd7a:115c:a1e0:/i.test(clean);
+}
+
 export function getPrimaryLanUrl(port, networkInterfaces = os.networkInterfaces()) {
   return getLanUrls(port, networkInterfaces)[0];
 }

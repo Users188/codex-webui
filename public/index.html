@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
     <meta name="theme-color" content="#151517" />
     <title>Codex WebUI</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
@@ -42,19 +43,7 @@
         </div>
 
         <div class="thread-list" id="threadList"></div>
-
-        <section class="usage-card" id="usageCard" aria-labelledby="usageTitle">
-          <div class="usage-card-header">
-            <div>
-              <strong id="usageTitle" data-i18n="usage.title">用量</strong>
-              <span id="usagePlan"></span>
-            </div>
-            <button class="usage-refresh" id="usageRefresh" type="button" data-i18n-title="usage.refresh" aria-label="刷新用量" data-i18n-aria-label="usage.refresh">↻</button>
-          </div>
-          <div class="usage-windows" id="usageWindows">
-            <div class="usage-empty" data-i18n="usage.loading">正在读取用量…</div>
-          </div>
-        </section>
+        <div class="sidebar-resizer" id="sidebarResizer" role="separator" aria-orientation="vertical" title="拖拽调整宽度，双击还原" data-i18n-title="sidebar.resize"></div>
       </aside>
 
       <main class="chat-pane">
@@ -93,6 +82,25 @@
           </div>
         </section>
 
+        <div class="thread-lock-banner hidden" id="threadLockBanner" role="alert">
+          <div class="thread-lock-main">
+            <div class="thread-lock-icon" aria-hidden="true">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+                <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+              </svg>
+            </div>
+            <div class="thread-lock-text">
+              <div class="thread-lock-title" data-i18n="thread.lockedTitle">已在另一个应用中打开</div>
+              <div class="thread-lock-desc" data-i18n="thread.lockedDesc">请先在那边关闭会话，才能在这里继续。</div>
+            </div>
+          </div>
+          <div class="thread-lock-actions">
+            <button type="button" class="thread-lock-btn" id="lockRetryBtn" data-i18n="thread.retry">重试</button>
+            <button type="button" class="thread-lock-btn primary" id="lockForkBtn" data-i18n="thread.fork">创建聊天分叉</button>
+          </div>
+        </div>
+
         <form class="composer" id="composer">
           <div class="follow-up-menu hidden" id="followUpMenu" role="menu" aria-label="选择后续消息方式" data-i18n-aria-label="composer.chooseFollowUpTitle">
             <button class="follow-up-option" type="button" role="menuitem" data-follow-up-mode="steer">
@@ -108,6 +116,7 @@
               <span data-i18n="composer.stopOptionDescription">保留已有内容并中断正在执行的任务</span>
             </button>
           </div>
+          <div class="skill-menu hidden" id="skillMenu" role="listbox" aria-label="选择技能" data-i18n-aria-label="skill.menuLabel"></div>
           <textarea id="promptInput" rows="1" placeholder="发消息给 Codex" data-i18n-placeholder="composer.placeholder"></textarea>
           <button class="send-button" id="sendButton" type="submit" data-i18n="composer.send" aria-label="发送" disabled>发送</button>
         </form>

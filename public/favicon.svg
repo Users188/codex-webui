@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <style>
+    rect {
+      fill: #151517;
+      stroke: rgba(255, 255, 255, 0.15);
+      stroke-width: 1;
+    }
+    text {
+      fill: #ffffff;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 19px;
+      font-weight: 850;
+      text-anchor: middle;
+      dominant-baseline: central;
+    }
+    @media (prefers-color-scheme: light) {
+      rect {
+        fill: #20211f;
+        stroke: rgba(0, 0, 0, 0.1);
+      }
+      text {
+        fill: #ffffff;
+      }
+    }
+  </style>
+  <rect x="0.5" y="0.5" width="31" height="31" rx="8"/>
+  <text x="16" y="16">C</text>
+</svg>

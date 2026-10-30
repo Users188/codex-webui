@@ -11,13 +11,14 @@ import QRCode from "qrcode";
 import { WebSocketServer } from "ws";
 import { readTokenStore, resolveDataDir, tokenStorePath } from "./token-store.js";
 import { UsageTracker } from "./usage-store.js";
-import { getLanUrls } from "./network-urls.js";
+import { getLanUrls, isTailscaleAddress } from "./network-urls.js";
 import { DesktopBridgeConnection } from "./desktop-bridge-client.js";
 import { sanitizeDesktopBridgeParams } from "./desktop-bridge-policy.js";
 import { isWebUserServerRequest } from "./server-request-policy.js";
 import { canReceiveThreadContext } from "./thread-notification-scope.js";
 import { createWorkspaceDirectory, listWorkspaceDirectories } from "./workspace-browser.js";
 import { CloudflareAccessAuthenticator, readCloudflareAccessConfig } from "./cloudflare-access.js";
+import { DesktopStateManager } from "./desktop-state.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -41,6 +42,7 @@ let tokenScopes = createTokenScopes();
 let defaultTokenScope = tokenScopes.values().next().value;
 let tokenStoreModifiedMs = currentTokenStoreModifiedMs();
 const usageTracker = new UsageTracker(dataDir);
+const desktopStateManager = new DesktopStateManager();
 const inlineImages = new Map();
 const inlineImageLimit = 80;
 const webuiCapabilities = {
@@ -57,9 +59,12 @@ const allowedMethods = new Set([
   "configRequirements/read",
   "model/list",
   "permissionProfile/list",
+  "skills/list",
+  "skills/config/write",
   "thread/list",
   "thread/start",
   "thread/resume",
+  "thread/fork",
   "thread/read",
   "thread/turns/list",
   "thread/name/set",
@@ -266,6 +271,7 @@ class DesktopCodexBridge {
       bridgeMode: "desktop",
       capabilities: webuiCapabilities,
       desktopBridgeConnected: true,
+      desktopState: desktopStateManager.loadState(),
       pendingServerRequests: Array.from(this.serverRequests.values())
         .filter((request) => canReceiveThreadContext(scope, threadContextFromAppServerMessage(request)))
     });
@@ -289,12 +295,15 @@ function normalizeParams(method, params, scope = defaultTokenScope) {
 
   if (method === "thread/start") {
     next.cwd = next.cwd || scope.defaultCwd;
-    if (hasThreadFilter(scope) && !isPathAllowedInScope(scope, next.cwd)) {
-      throw new Error("This token can only create sessions in the allowed folder.");
-    }
-    next.cwd = normalizeLocalPath(next.cwd);
-    if (!existsSync(next.cwd) || !statSync(next.cwd).isDirectory()) {
-      throw new Error("The selected workspace directory does not exist.");
+    const isRemote = Boolean(next.hostId && next.hostId !== "local");
+    if (!isRemote) {
+      if (hasThreadFilter(scope) && !isPathAllowedInScope(scope, next.cwd)) {
+        throw new Error("This token can only create sessions in the allowed folder.");
+      }
+      next.cwd = normalizeLocalPath(next.cwd);
+      if (!existsSync(next.cwd) || !statSync(next.cwd).isDirectory()) {
+        throw new Error("The selected workspace directory does not exist.");
+      }
     }
     next.serviceName = "codex_webui";
     if (!next.permissions) next.permissions = ":workspace";
@@ -303,7 +312,7 @@ function normalizeParams(method, params, scope = defaultTokenScope) {
     normalizeReasoningEffortParam(next);
   }
 
-  if (method === "thread/resume") {
+  if (method === "thread/resume" || method === "thread/fork") {
     if (next.cwd === "") delete next.cwd;
     normalizeReasoningEffortParam(next);
   }
@@ -317,6 +326,22 @@ function normalizeParams(method, params, scope = defaultTokenScope) {
       next.input = next.input.map((item) =>
         item?.type === "text" ? { text_elements: [], ...item } : item
       );
+    }
+  }
+
+  if (method === "skills/list") {
+    const rawCwds = Array.isArray(next.cwds) ? next.cwds.filter(Boolean) : [];
+    const candidateCwds = rawCwds.length ? rawCwds : (scope?.defaultCwd ? [scope.defaultCwd] : []);
+    if (hasThreadFilter(scope)) {
+      const allowedCwds = candidateCwds
+        .map((cwd) => normalizeLocalPath(cwd))
+        .filter((cwd) => cwd && isPathAllowedInScope(scope, cwd));
+      if (rawCwds.length && !allowedCwds.length) {
+        throw new Error("This token can only access sessions in the allowed folder.");
+      }
+      next.cwds = allowedCwds.length ? allowedCwds : scopeFilterRoots(scope);
+    } else if (candidateCwds.length) {
+      next.cwds = candidateCwds.map((cwd) => normalizeLocalPath(cwd)).filter(Boolean);
     }
   }
 
@@ -337,6 +362,9 @@ function normalizeParams(method, params, scope = defaultTokenScope) {
 
 const bridgeMode = "desktop";
 const bridge = new DesktopCodexBridge();
+desktopStateManager.onChange((state) => {
+  bridge.broadcast({ type: "desktop-state-updated", state });
+});
 
 const server = createServer(async (req, res) => {
   try {
@@ -372,6 +400,17 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === "/api/projects" && req.method === "GET") {
+      const scope = await resolveRequestScope(req, url);
+      if (!scope) {
+        sendJsonStatus(res, 401, { error: "Unauthorized" });
+        return;
+      }
+      recordHttpUsage(scope, req);
+      sendJson(res, desktopStateManager.loadState());
+      return;
+    }
+
     if (url.pathname === "/api/workspaces" && req.method === "GET") {
       const scope = await resolveRequestScope(req, url);
       if (!scope) {
@@ -379,10 +418,52 @@ const server = createServer(async (req, res) => {
         return;
       }
       recordHttpUsage(scope, req);
-      const result = listWorkspaceDirectories(url.searchParams.get("path") || "", {
-        scopeRoots: scopeFilterRoots(scope)
-      });
-      sendJson(res, result);
+      const requestedPath = url.searchParams.get("path") || "";
+      try {
+        const result = listWorkspaceDirectories(requestedPath, {
+          scopeRoots: scopeFilterRoots(scope)
+        });
+        sendJson(res, result);
+      } catch (err) {
+        if (!requestedPath || err.message?.includes("must be absolute")) {
+          const fallback = listWorkspaceDirectories("", {
+            scopeRoots: scopeFilterRoots(scope)
+          });
+          sendJson(res, fallback);
+        } else {
+          sendJsonStatus(res, 400, { error: err.message });
+        }
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/threads/") && url.pathname.endsWith("/pin") && req.method === "POST") {
+      const scope = await resolveRequestScope(req, url);
+      if (!scope) {
+        sendJsonStatus(res, 401, { error: "Unauthorized" });
+        return;
+      }
+      recordHttpUsage(scope, req);
+      const match = url.pathname.match(/^\/api\/threads\/([^/]+)\/pin$/);
+      const threadId = match ? match[1] : null;
+      const body = JSON.parse((await readRequestBody(req, 16 * 1024)).toString("utf8") || "{}");
+      const ok = desktopStateManager.setThreadPinned(threadId, Boolean(body.pinned));
+      sendJson(res, { ok });
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/projects/") && url.pathname.endsWith("/pin") && req.method === "POST") {
+      const scope = await resolveRequestScope(req, url);
+      if (!scope) {
+        sendJsonStatus(res, 401, { error: "Unauthorized" });
+        return;
+      }
+      recordHttpUsage(scope, req);
+      const match = url.pathname.match(/^\/api\/projects\/([^/]+)\/pin$/);
+      const projectId = match ? match[1] : null;
+      const body = JSON.parse((await readRequestBody(req, 16 * 1024)).toString("utf8") || "{}");
+      const ok = desktopStateManager.setProjectPinned(projectId, Boolean(body.pinned));
+      sendJson(res, { ok });
       return;
     }
 
@@ -606,11 +687,29 @@ wss.on("connection", (ws) => {
           })
         : activeScope;
       if (message.type === "rpc") {
+        if (message.method === "thread/pin") {
+          const { threadId, pinned } = message.params || {};
+          const ok = desktopStateManager.setThreadPinned(threadId, Boolean(pinned));
+          const response = { type: "rpc-result", requestId: message.requestId, result: { ok } };
+          ws.sendJson(response);
+          return;
+        }
+        if (message.method === "project/pin") {
+          const { projectId, pinned } = message.params || {};
+          const ok = desktopStateManager.setProjectPinned(projectId, Boolean(pinned));
+          const response = { type: "rpc-result", requestId: message.requestId, result: { ok } };
+          ws.sendJson(response);
+          return;
+        }
+        const requestedProjectId = message.params?.projectId || null;
         const requestParams = bridgeMode === "desktop"
           ? sanitizeDesktopBridgeParams(message.method, message.params || {})
           : message.params || {};
         await ensureThreadAccess(message.method, requestParams, ws.tokenScope);
         const rawResult = await bridge.request(message.method, requestParams, ws.tokenScope);
+        if (message.method === "thread/start" && requestedProjectId && rawResult?.thread?.id) {
+          desktopStateManager.assignThreadToProject(rawResult.thread.id, requestedProjectId);
+        }
         rememberVisibleThreadFromResult(message.method, rawResult, ws.tokenScope);
         const result = await compactResultForClient(message.method, rawResult, ws.tokenScope);
         const response = { type: "rpc-result", requestId: message.requestId, result };
@@ -638,7 +737,20 @@ wss.on("connection", (ws) => {
   });
 });
 
-server.listen(PORT, HOST, async () => {
+const MAX_LISTEN_RETRIES = 5;
+const INITIAL_RETRY_DELAY_MS = 500;
+let listenAttempts = 0;
+let listenRetryTimer = null;
+
+function tryListen() {
+  server.listen(PORT, HOST);
+}
+
+server.once("listening", async () => {
+  if (listenRetryTimer) {
+    clearTimeout(listenRetryTimer);
+    listenRetryTimer = null;
+  }
   const urls = getLanUrls(PORT);
   const banner = [
     "",
@@ -661,6 +773,24 @@ server.listen(PORT, HOST, async () => {
     // Best effort only.
   }
 });
+
+server.on("error", (error) => {
+  if (error.code === "EADDRINUSE" && listenAttempts < MAX_LISTEN_RETRIES) {
+    listenAttempts++;
+    const delay = listenAttempts * INITIAL_RETRY_DELAY_MS;
+    console.warn(`[codex-webui] Port ${PORT} is in use; retrying in ${delay}ms (attempt ${listenAttempts}/${MAX_LISTEN_RETRIES})...`);
+    listenRetryTimer = setTimeout(() => {
+      if (!server.listening) {
+        tryListen();
+      }
+    }, delay);
+    return;
+  }
+  console.error(`[codex-webui] Server failed to start:`, error.message);
+  process.exit(error.code === "EADDRINUSE" ? 48 : 1);
+});
+
+tryListen();
 
 function sendJson(res, payload) {
   sendJsonStatus(res, 200, payload);
@@ -917,9 +1047,54 @@ function scopeFromToken(token) {
   return tokenScopes.get(String(token || ""));
 }
 
+function isLoopbackAddress(address) {
+  if (!address) return false;
+  return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
+}
+
+function isLoopbackRequest(req) {
+  const remote = req.socket?.remoteAddress;
+  return isLoopbackAddress(remote);
+}
+
+function localhostBypassEnabled() {
+  const val = String(process.env.CODEX_WEBUI_REQUIRE_LOCAL_TOKEN || "").trim().toLowerCase();
+  return !["1", "true", "yes", "on"].includes(val);
+}
+
+function isTailscaleRequest(req) {
+  const remote = req.socket?.remoteAddress;
+  return isTailscaleAddress(remote);
+}
+
+function tailscaleBypassEnabled() {
+  const val = String(process.env.CODEX_WEBUI_REQUIRE_TAILSCALE_TOKEN || "").trim().toLowerCase();
+  return !["1", "true", "yes", "on"].includes(val);
+}
+
+function resolveTailscaleScope() {
+  refreshTokenScopesIfChanged();
+  for (const scope of tokenScopes.values()) {
+    if (scope.id === "tailscale") return scope;
+  }
+  return defaultTokenScope;
+}
+
+
 async function resolveRequestScope(req, url) {
-  const tokenScope = scopeFromToken(url.searchParams.get("token"));
+  const rawToken = url.searchParams.get("token");
+  const tokenScope = scopeFromToken(rawToken);
   if (tokenScope) return tokenScope;
+
+  if (!rawToken && isLoopbackRequest(req) && localhostBypassEnabled()) {
+    refreshTokenScopesIfChanged();
+    return defaultTokenScope;
+  }
+
+  if (!rawToken && isTailscaleRequest(req) && tailscaleBypassEnabled()) {
+    return resolveTailscaleScope();
+  }
+
   let identity = null;
   try {
     identity = await cloudflareAccessAuthenticator.authenticateRequest(req);
@@ -1035,7 +1210,7 @@ async function printAndWriteQrCodes(baseUrls) {
 
 async function compactResultForClient(method, result, scope = defaultTokenScope) {
   if (method === "thread/list") return filterThreadListResult(result, scope);
-  if (method === "thread/read" || method === "thread/start" || method === "thread/resume") {
+  if (method === "thread/read" || method === "thread/start" || method === "thread/resume" || method === "thread/fork") {
     return stripInlineDataImages(result);
   }
   if (method === "thread/turns/list") return stripInlineDataImages(result);
@@ -1080,7 +1255,7 @@ function filterThreadListResult(result, scope = defaultTokenScope) {
 
 function rememberVisibleThreadFromResult(method, result, scope = defaultTokenScope) {
   if (!hasThreadFilter(scope)) return;
-  if (method !== "thread/start" && method !== "thread/resume" && method !== "thread/read") return;
+  if (method !== "thread/start" && method !== "thread/resume" && method !== "thread/read" && method !== "thread/fork") return;
   const thread = result?.thread || result;
   if (thread?.id && isThreadInFilter(thread, scope)) {
     scope.visibleThreadIds.add(thread.id);
@@ -1296,11 +1471,13 @@ function readRequestBody(req, limitBytes) {
 }
 
 process.on("SIGINT", () => {
+  if (listenRetryTimer) clearTimeout(listenRetryTimer);
   usageTracker.flush();
   process.exit(0);
 });
 
 process.on("SIGTERM", () => {
+  if (listenRetryTimer) clearTimeout(listenRetryTimer);
   usageTracker.flush();
   process.exit(0);
 });

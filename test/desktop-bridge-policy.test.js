@@ -18,6 +18,20 @@ test("desktop bridge strips runtime setting overrides from existing-thread turns
   });
 });
 
+test("desktop bridge fork carries target thread ID and drops overrides", () => {
+  assert.deepEqual(
+    sanitizeDesktopBridgeParams("thread/fork", {
+      threadId: "thread-2",
+      cwd: "D:\\wrong",
+      model: "other-model",
+      effort: "low",
+      approvalPolicy: "never",
+      sandbox: "read-only"
+    }),
+    { threadId: "thread-2" }
+  );
+});
+
 test("desktop bridge resume carries only the target thread ID", () => {
   assert.deepEqual(
     sanitizeDesktopBridgeParams("thread/resume", {
@@ -37,6 +51,7 @@ test("new shared threads keep model effort and permission presets but drop raw s
     cwd: "E:\\AI\\project",
     model: "gpt-test",
     effort: "high",
+    projectId: "proj-123",
     permissions: ":danger-full-access",
     approvalPolicy: "never",
     approvalsReviewer: "user",

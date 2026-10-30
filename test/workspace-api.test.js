@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import net from "node:net";
 import os from "node:os";
@@ -15,6 +15,8 @@ test("Desktop-only server browses and creates scoped workspaces without spawning
   const outsideRoot = path.join(temp, "outside");
   mkdirSync(path.join(allowedRoot, "existing"), { recursive: true });
   mkdirSync(outsideRoot, { recursive: true });
+  const mockStatePath = path.join(temp, "global-state.json");
+  writeFileSync(mockStatePath, JSON.stringify({ "project-order": [], "local-projects": {} }), "utf8");
   const port = await freePort();
   const token = "workspace-api-test-token";
   const server = spawn(process.execPath, [path.join(rootDir, "server", "index.js")], {
@@ -22,6 +24,7 @@ test("Desktop-only server browses and creates scoped workspaces without spawning
     env: {
       ...process.env,
       CODEX_WEBUI_DATA_DIR: dataDir,
+      CODEX_GLOBAL_STATE_PATH: mockStatePath,
       CODEX_WEBUI_TOKEN_SCOPES: JSON.stringify([{ token, cwds: [allowedRoot] }]),
       CODEX_WEBUI_CODEX_PATH: path.join(temp, "must-not-be-spawned.exe"),
       CODEX_DESKTOP_BRIDGE_PIPE: process.platform === "win32"
@@ -75,6 +78,26 @@ test("Desktop-only server browses and creates scoped workspaces without spawning
   );
   assert.equal(outsideResponse.ok, false);
   assert.match((await outsideResponse.json()).error, /outside the allowed directory scope/);
+
+  // Graceful fallback for non-absolute or invalid path
+  const nonAbsoluteFallback = await fetch(
+    `${base}/api/workspaces?token=${encodeURIComponent(token)}&path=relative-uuid-or-empty`
+  ).then((res) => res.json());
+  assert.deepEqual(nonAbsoluteFallback.roots.map((entry) => entry.path), [allowedRoot]);
+
+  const pinThreadRes = await fetch(`${base}/api/threads/test-thread-pin/pin?token=${encodeURIComponent(token)}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ pinned: true })
+  });
+  assert.equal(pinThreadRes.ok, true);
+
+  const pinProjRes = await fetch(`${base}/api/projects/test-proj-pin/pin?token=${encodeURIComponent(token)}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ pinned: true })
+  });
+  assert.equal(pinProjRes.ok, true);
 });
 
 function freePort() {

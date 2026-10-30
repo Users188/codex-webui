@@ -56,6 +56,41 @@ if (process.env.FAKE_CODEX_CAPTURE_ARGS === "1" || !args.includes("app-server"))
       });
       return;
     }
+    if (message.method === "skills/list") {
+      reply(message.id, {
+        data: [
+          {
+            cwd: (Array.isArray(message.params?.cwds) && message.params.cwds[0]) || process.cwd(),
+            skills: [
+              {
+                name: "novel-craft",
+                description: "Long-form novel creation framework",
+                shortDescription: "Novel creation workflow",
+                interface: {
+                  displayName: "Novel Craft",
+                  shortDescription: "Novel creation workflow",
+                  defaultPrompt: null
+                },
+                path: "D:\\CodexData\\.codex\\skills\\novel-craft\\SKILL.md",
+                scope: "user",
+                enabled: true,
+                pluginId: null
+              }
+            ],
+            errors: []
+          }
+        ],
+        receivedParams: message.params
+      });
+      return;
+    }
+    if (message.method === "skills/config/write") {
+      reply(message.id, {
+        effectiveEnabled: Boolean(message.params?.enabled),
+        receivedParams: message.params
+      });
+      return;
+    }
     if (message.method === "configRequirements/read") {
       reply(message.id, { requirements: null });
       return;
@@ -161,9 +196,10 @@ if (process.env.FAKE_CODEX_CAPTURE_ARGS === "1" || !args.includes("app-server"))
       notify("turn/started", { threadId: message.params.threadId, turn });
       return;
     }
-    if (message.method === "thread/resume") {
+    if (message.method === "thread/resume" || message.method === "thread/fork") {
+      const targetId = message.method === "thread/fork" ? `${message.params.threadId}-forked` : message.params.threadId;
       reply(message.id, {
-        thread: { id: message.params.threadId, cwd: process.cwd(), turns: [] },
+        thread: { id: targetId, cwd: process.cwd(), turns: [] },
         model: "gpt-test",
         reasoningEffort: "medium",
         approvalPolicy: "on-request",

@@ -88,3 +88,31 @@ test("shared thread start and updates send profiles but never raw sandbox policy
   assert.equal(update.approvalPolicy, "on-request");
   assert.equal("sandbox" in update || "sandboxPolicy" in update, false);
 });
+
+test("buildSharedThreadStart carries remote hostId and projectId", () => {
+  const modes = availablePermissionModes(profiles);
+  const result = buildSharedThreadStart({
+    cwd: "D:/Remote/DV3",
+    model: "gpt-test",
+    effort: "high",
+    permissionMode: "full-access",
+    modes,
+    hostId: "remote-ssh-discovered:100.108.151.113",
+    projectId: "proj-remote-123"
+  });
+  assert.equal(result.cwd, "D:/Remote/DV3");
+  assert.equal(result.hostId, "remote-ssh-discovered:100.108.151.113");
+  assert.equal(result.projectId, "proj-remote-123");
+
+  const localResult = buildSharedThreadStart({
+    cwd: "E:/Local",
+    model: "gpt-test",
+    effort: "high",
+    permissionMode: "full-access",
+    modes,
+    hostId: "local",
+    projectId: "proj-local-456"
+  });
+  assert.equal(localResult.hostId, undefined);
+  assert.equal(localResult.projectId, "proj-local-456");
+});

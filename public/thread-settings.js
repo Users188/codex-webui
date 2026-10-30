@@ -112,10 +112,12 @@ export function buildThreadSettingsUpdate({ threadId, model, effort, permissionM
   };
 }
 
-export function buildSharedThreadStart({ cwd, model, effort, permissionMode, modes }) {
+export function buildSharedThreadStart({ cwd, model, effort, permissionMode, modes, hostId, projectId }) {
   if (!cwd) throw new Error("cwd is required");
   return {
     cwd,
+    ...(hostId && hostId !== "local" ? { hostId } : {}),
+    ...(projectId ? { projectId } : {}),
     ...runtimeSelectionParams({ model, effort, permissionMode, modes })
   };
 }

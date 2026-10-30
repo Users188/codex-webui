@@ -13,7 +13,7 @@ const rawSandboxKeys = new Set(["sandbox", "sandboxPolicy", "sandbox_policy"]);
 
 export function sanitizeDesktopBridgeParams(method, params = {}) {
   const next = { ...(params || {}) };
-  if (method === "thread/resume") {
+  if (method === "thread/resume" || method === "thread/fork") {
     return next.threadId ? { threadId: next.threadId } : {};
   }
   if (method === "turn/start") {
@@ -22,6 +22,7 @@ export function sanitizeDesktopBridgeParams(method, params = {}) {
   }
   if (method === "thread/start" || method === "thread/settings/update") {
     for (const key of rawSandboxKeys) delete next[key];
+    delete next.projectId;
   }
   return next;
 }

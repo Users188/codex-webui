@@ -8,7 +8,15 @@ import {
   waitForPendingImageUploads
 } from "./follow-up.js";
 import { formatResetTime, normalizeRateLimits, rateLimitWindowLabel } from "./rate-limits.js";
-import { projectGroupRank, projectOverflowAction, sortProjectGroupsByActivity } from "./sidebar-projects.js";
+import {
+  findProjectForThread,
+  groupThreadsByDesktopProjects,
+  isPathInside,
+  mergeRemoteThreads,
+  projectGroupRank,
+  projectOverflowAction,
+  sortProjectGroupsByActivity
+} from "./sidebar-projects.js";
 import {
   ACTIVE_THREAD_SYNC_MS,
   IDLE_THREAD_SYNC_MS,
@@ -79,6 +87,13 @@ const state = {
   expandedProjects: new Set(),
   collapsedProjects: storedCollapsedProjects(),
   pendingImages: [],
+  skills: [],
+  skillsByCwd: new Map(),
+  pendingSkills: [],
+  skillMenuOpen: false,
+  skillMenuIndex: 0,
+  skillMenuItems: [],
+  skillTrigger: null,
   currentThread: null,
   lastMessageAt: null,
   loadingThreadId: null,
@@ -130,10 +145,18 @@ const state = {
   urlThreadId: "",
   desktopBridgeConnected: true,
   desktopBridgeReconnecting: false,
+  threadLockConflict: false,
+  forkingThreadId: null,
   threadSyncTimer: null,
   threadSyncInFlight: false,
   threadListSyncInFlight: false,
-  lastThreadListSyncAt: 0
+  lastThreadListSyncAt: 0,
+  desktopProjects: [],
+  desktopAssignments: {},
+  pinnedThreadIds: [],
+  pinnedProjectIds: [],
+  projectlessThreadIds: [],
+  desktopRemoteThreads: []
 };
 
 let threadTitleScrollFrame = null;
@@ -163,6 +186,7 @@ const els = {
   composer: document.querySelector("#composer"),
   promptInput: document.querySelector("#promptInput"),
   followUpMenu: document.querySelector("#followUpMenu"),
+  skillMenu: document.querySelector("#skillMenu"),
   sendButton: document.querySelector("#sendButton"),
   chatPane: document.querySelector(".chat-pane"),
   setupBand: document.querySelector("#setupBand"),
@@ -192,6 +216,9 @@ const els = {
   threadTitle: document.querySelector("#threadTitle"),
   threadMeta: document.querySelector("#threadMeta"),
   resumeStatus: document.querySelector("#resumeStatus"),
+  threadLockBanner: document.querySelector("#threadLockBanner"),
+  lockRetryBtn: document.querySelector("#lockRetryBtn"),
+  lockForkBtn: document.querySelector("#lockForkBtn"),
   fullscreenToggle: document.querySelector("#fullscreenToggle"),
   imageViewer: document.querySelector("#imageViewer"),
   imageViewerImg: document.querySelector("#imageViewerImg"),
@@ -233,6 +260,10 @@ async function boot() {
 
   const infoUrl = state.token ? `/api/info?token=${encodeURIComponent(state.token)}` : "/api/info";
   const info = await fetch(infoUrl).then((res) => res.json()).catch(() => null);
+  const projectsUrl = state.token ? `/api/projects?token=${encodeURIComponent(state.token)}` : "/api/projects";
+  fetch(projectsUrl).then((res) => (res.ok ? res.json() : null)).then((projectsData) => {
+    if (projectsData) applyDesktopState(projectsData);
+  }).catch(() => {});
   state.authMode = String(info?.authMode || "");
   state.desktopBridgeConnected = null;
   state.threadSettingsAvailable = Boolean(info?.capabilities?.threadSettings);
@@ -371,7 +402,8 @@ async function initialLoad() {
       loadPermissionModes(),
       loadAccount(),
       loadThreads(),
-      loadRateLimits()
+      loadRateLimits(),
+      loadSkills()
     ]);
     const threadsLoaded = results[4]?.status === "fulfilled";
     for (const result of results) {
@@ -390,11 +422,14 @@ function bindUi() {
   setupMobileViewport();
   setupBackButtonGuard();
   updateFullscreenToggle();
+  initSidebarResizer();
   els.newThread.addEventListener("click", () => {
     createThread();
     if (state.workspaceBrowserAvailable) openWorkspacePicker();
   });
   els.refreshThreads?.addEventListener("click", refreshAll);
+  els.lockRetryBtn?.addEventListener("click", () => retryCurrentThreadResume());
+  els.lockForkBtn?.addEventListener("click", () => forkCurrentThread());
   els.resumeStatus?.addEventListener("click", async () => {
     try {
       if (state.desktopBridgeConnected === false) {
@@ -415,19 +450,28 @@ function bindUi() {
   els.fullscreenToggle?.addEventListener("click", toggleFullscreen);
   document.addEventListener("fullscreenchange", updateFullscreenToggle);
   document.addEventListener("webkitfullscreenchange", updateFullscreenToggle);
-  els.projectSelect.addEventListener("change", () => {
+  function onProjectSelectChanged() {
+    const proj = getSelectedProject();
+    updateProjectInputState(proj);
     if (state.currentThread?.draft) {
-      state.currentThread.cwd = els.projectSelect.value;
+      state.currentThread.cwd = proj ? proj.primaryPath : (els.projectSelect.value || preferredScopedCwd());
+      state.currentThread.selectedProjectId = proj?.id || null;
+      state.currentThread.selectedHostId = proj?.hostId || null;
       loadPermissionModes(state.currentThread.cwd).catch((error) => addSystemMessage(error.message));
+      loadSkills(state.currentThread.cwd).catch(() => {});
       updateThreadHeader();
       renderEmpty(
         t("thread.new"),
-        state.currentThread.cwd
-          ? t("empty.newThreadProject", { project: projectFromCwd(state.currentThread.cwd).name })
-          : t("empty.noProject")
+        proj
+          ? (proj.projectKind === "remote"
+              ? t("empty.newThreadRemote", { project: `${proj.name} (${proj.hostDisplayName || proj.hostId})` })
+              : t("empty.newThreadProject", { project: proj.name }))
+          : (state.currentThread.cwd ? t("empty.newThreadProject", { project: projectFromCwd(state.currentThread.cwd).name }) : t("empty.noProject"))
       );
     }
-  });
+  }
+  els.projectSelect.addEventListener("change", onProjectSelectChanged);
+  els.projectSelect.addEventListener("input", onProjectSelectChanged);
   els.modelSelect.addEventListener("change", () => {
     updateReasoningOptions("", { useModelDefault: true });
     persistSelectedThreadSettings();
@@ -525,11 +569,13 @@ function bindUi() {
       return;
     }
     const text = els.promptInput.value.trim();
-    if (!text && !state.pendingImages.length) return;
+    if (!text && !state.pendingImages.length && !state.pendingSkills.length) return;
     try {
       await sendTurn(text);
     } catch (error) {
-      addSystemMessage(error.message || t("error.send"));
+      if (!isLockConflictError(error)) {
+        addSystemMessage(error.message || t("error.send"));
+      }
     }
   });
 
@@ -547,32 +593,73 @@ function bindUi() {
       return;
     }
     const text = els.promptInput.value.trim();
-    if (!text && !state.pendingImages.length) return;
+    if (!text && !state.pendingImages.length && !state.pendingSkills.length) return;
     const queue = mode === "queue";
     const expectedActiveTurnId = state.activeTurns.get(state.currentThread?.id) || null;
     setFollowUpMenuOpen(false);
     try {
       await sendTurn(text, { queue, expectedActiveTurnId });
     } catch (error) {
-      addSystemMessage(error.message || t("error.send"));
+      if (!isLockConflictError(error)) {
+        addSystemMessage(error.message || t("error.send"));
+      }
     }
   });
 
   document.addEventListener("pointerdown", (event) => {
+    if (els.skillMenu && !els.skillMenu.classList.contains("hidden")) {
+      if (!els.skillMenu.contains(event.target) && event.target !== els.promptInput) {
+        closeSkillMenu();
+      }
+    }
     if (els.followUpMenu?.classList.contains("hidden")) return;
     if (els.followUpMenu.contains(event.target) || els.sendButton.contains(event.target)) return;
     setFollowUpMenuOpen(false);
   });
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") setFollowUpMenuOpen(false);
+    if (event.key === "Escape") {
+      setFollowUpMenuOpen(false);
+      closeSkillMenu();
+    }
   });
 
   els.promptInput.addEventListener("input", () => {
+    syncPendingSkillsWithPrompt();
     resizePromptInput();
     updateFollowUpOptions();
+    updateSkillMenu();
+  });
+  els.promptInput.addEventListener("click", () => {
+    updateSkillMenu();
   });
   els.promptInput.addEventListener("keydown", (event) => {
-    if (event.key !== "Enter" || event.shiftKey || event.isComposing || event.keyCode === 229) return;
+    if (event.isComposing || event.keyCode === 229) return;
+    if (state.skillMenuOpen && state.skillMenuItems.length) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        state.skillMenuIndex = (state.skillMenuIndex + 1) % state.skillMenuItems.length;
+        renderSkillMenuItems();
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        state.skillMenuIndex = (state.skillMenuIndex - 1 + state.skillMenuItems.length) % state.skillMenuItems.length;
+        renderSkillMenuItems();
+        return;
+      }
+      if (event.key === "Enter" || event.key === "Tab") {
+        event.preventDefault();
+        const selected = state.skillMenuItems[state.skillMenuIndex];
+        if (selected) applySkillSelection(selected);
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeSkillMenu();
+        return;
+      }
+    }
+    if (event.key !== "Enter" || event.shiftKey) return;
     event.preventDefault();
     submitComposer();
   });
@@ -1197,9 +1284,23 @@ function imageMimeForFile(file) {
 function renderImageTray() {
   if (!els.imageTray) return;
   els.imageTray.innerHTML = "";
-  const hasImages = Boolean(state.pendingImages.length);
-  els.imageTray.classList.toggle("hidden", !hasImages);
-  els.composer?.classList.toggle("has-image-tray", hasImages);
+  const hasTray = Boolean(state.pendingImages.length || state.pendingSkills.length);
+  els.imageTray.classList.toggle("hidden", !hasTray);
+  els.composer?.classList.toggle("has-image-tray", hasTray);
+
+  for (const skill of state.pendingSkills) {
+    const chip = document.createElement("div");
+    chip.className = "skill-chip";
+    chip.title = skill.description || skill.displayName || skill.name;
+    chip.innerHTML = `
+      <span>${escapeHtml(skill.name)}</span>
+      <button type="button" aria-label="${escapeHtml(t("skill.remove"))}">×</button>
+    `;
+    chip.querySelector("button").addEventListener("click", () => {
+      removePendingSkill(skill.name);
+    });
+    els.imageTray.append(chip);
+  }
 
   for (const image of state.pendingImages) {
     const item = document.createElement("div");
@@ -1234,6 +1335,263 @@ function revokeImagePreviews(images) {
   for (const image of images || []) {
     if (image.previewUrl) URL.revokeObjectURL(image.previewUrl);
   }
+}
+
+function currentEffectiveCwd() {
+  return String(
+    state.currentThread?.cwd
+    || getSelectedCwd()
+    || els.cwdInput?.value
+    || ""
+  ).trim();
+}
+
+async function loadSkills(cwd = currentEffectiveCwd(), { forceReload = false } = {}) {
+  const normalizedCwd = String(cwd || "").trim();
+  const params = {};
+  if (normalizedCwd) params.cwds = [normalizedCwd];
+  if (forceReload) params.forceReload = true;
+  const result = await rpc("skills/list", params);
+  const entries = Array.isArray(result?.data) ? result.data : [];
+  const byName = new Map();
+  for (const entry of entries) {
+    for (const skill of entry?.skills || []) {
+      if (!skill?.name || skill.enabled === false) continue;
+      if (!byName.has(skill.name)) {
+        byName.set(skill.name, skill);
+      }
+    }
+  }
+  const list = [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+  state.skills = list;
+  if (normalizedCwd) state.skillsByCwd.set(normalizedCwd, list);
+  if (state.skillMenuOpen) updateSkillMenu();
+  return list;
+}
+
+function detectSkillTrigger(textarea) {
+  if (!textarea) return null;
+  const value = String(textarea.value || "");
+  const caret = typeof textarea.selectionStart === "number" ? textarea.selectionStart : value.length;
+  const beforeCaret = value.slice(0, caret);
+  const match = /(?:^|\s)([$/])([a-zA-Z0-9_.:-]*)$/.exec(beforeCaret);
+  if (!match) return null;
+  const prefix = match[1];
+  const query = match[2] || "";
+  const tokenLength = 1 + query.length;
+  const start = caret - tokenLength;
+  return { prefix, query, start, end: caret };
+}
+
+function matchSkillsByQuery(query) {
+  const q = String(query || "").trim().toLowerCase();
+  const skills = state.skills || [];
+  if (!q) return skills.slice(0, 30);
+  return skills
+    .map((skill) => {
+      const name = String(skill.name || "").toLowerCase();
+      const displayName = String(skill.interface?.displayName || "").toLowerCase();
+      const shortDesc = String(skill.interface?.shortDescription || skill.shortDescription || "").toLowerCase();
+      const desc = String(skill.description || "").toLowerCase();
+      let score = 0;
+      if (name === q) score = 100;
+      else if (name.startsWith(q)) score = 80;
+      else if (displayName.startsWith(q)) score = 70;
+      else if (name.includes(q)) score = 60;
+      else if (displayName.includes(q)) score = 50;
+      else if (shortDesc.includes(q) || desc.includes(q)) score = 30;
+      return { skill, score };
+    })
+    .filter((entry) => entry.score > 0)
+    .sort((a, b) => b.score - a.score || a.skill.name.localeCompare(b.skill.name))
+    .slice(0, 20)
+    .map((entry) => entry.skill);
+}
+
+function updateSkillMenu() {
+  if (!els.skillMenu) return;
+  const trigger = detectSkillTrigger(els.promptInput);
+  if (!trigger || !state.skills.length) {
+    closeSkillMenu();
+    return;
+  }
+  const matches = matchSkillsByQuery(trigger.query);
+  if (!matches.length) {
+    closeSkillMenu();
+    return;
+  }
+  state.skillTrigger = trigger;
+  state.skillMenuItems = matches;
+  if (state.skillMenuIndex >= matches.length || state.skillMenuIndex < 0) {
+    state.skillMenuIndex = 0;
+  }
+  state.skillMenuOpen = true;
+  els.skillMenu.classList.remove("hidden");
+  renderSkillMenuItems();
+}
+
+function renderSkillMenuItems() {
+  if (!els.skillMenu) return;
+  els.skillMenu.innerHTML = "";
+  state.skillMenuItems.forEach((skill, idx) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.role = "option";
+    button.className = `skill-option${idx === state.skillMenuIndex ? " active" : ""}`;
+    button.setAttribute("aria-selected", String(idx === state.skillMenuIndex));
+    const displayName = skill.interface?.displayName || "";
+    const desc = skill.interface?.shortDescription || skill.shortDescription || skill.description || "";
+    const scopeKey = `skill.scope.${skill.scope || "user"}`;
+    const scopeLabel = t(scopeKey);
+    button.innerHTML = `
+      <div class="skill-option-head">
+        <div class="skill-option-title">
+          <span class="skill-option-name">${escapeHtml(skill.name)}</span>
+          ${displayName && displayName.toLowerCase() !== skill.name.toLowerCase() ? `<span class="skill-option-display">${escapeHtml(displayName)}</span>` : ""}
+        </div>
+        ${scopeLabel && scopeLabel !== scopeKey ? `<span class="skill-option-badge">${escapeHtml(scopeLabel)}</span>` : ""}
+      </div>
+      ${desc ? `<div class="skill-option-desc">${escapeHtml(desc)}</div>` : ""}
+    `;
+    button.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      applySkillSelection(skill);
+    });
+    els.skillMenu.append(button);
+  });
+  const activeEl = els.skillMenu.querySelector(".skill-option.active");
+  activeEl?.scrollIntoView({ block: "nearest" });
+}
+
+function closeSkillMenu() {
+  state.skillMenuOpen = false;
+  state.skillMenuItems = [];
+  state.skillMenuIndex = 0;
+  state.skillTrigger = null;
+  els.skillMenu?.classList.add("hidden");
+}
+
+function applySkillSelection(skill) {
+  if (!skill?.name || !els.promptInput) return;
+  const trigger = state.skillTrigger || detectSkillTrigger(els.promptInput);
+  const value = String(els.promptInput.value || "");
+  const tokenText = `${skill.name} `;
+  let nextCursor = tokenText.length;
+  if (trigger) {
+    const before = value.slice(0, trigger.start);
+    const after = value.slice(trigger.end).replace(/^\s+/, "");
+    els.promptInput.value = `${before}${tokenText}${after}`;
+    nextCursor = before.length + tokenText.length;
+  } else {
+    const prefix = value && !/\s$/.test(value) ? `${value} ` : value;
+    els.promptInput.value = `${prefix}${tokenText}`;
+    nextCursor = els.promptInput.value.length;
+  }
+  if (!state.pendingSkills.some((item) => item.name === skill.name)) {
+    state.pendingSkills.push({
+      name: skill.name,
+      path: skill.path || "",
+      displayName: skill.interface?.displayName || skill.name,
+      description: skill.interface?.shortDescription || skill.shortDescription || skill.description || ""
+    });
+  }
+  closeSkillMenu();
+  els.promptInput.focus();
+  els.promptInput.setSelectionRange(nextCursor, nextCursor);
+  resizePromptInput();
+  renderImageTray();
+  updateFollowUpOptions();
+}
+
+function removePendingSkill(skillName) {
+  state.pendingSkills = state.pendingSkills.filter((item) => item.name !== skillName);
+  if (els.promptInput) {
+    const escaped = skillName.replace(/[.*+?^${}()|[\]\\]/g, "\\async function loadModels() {");
+    const regex = new RegExp(`(?:^|\\s)\\${escaped}(?=\\s|$)`, "g");
+    els.promptInput.value = els.promptInput.value.replace(regex, " ").replace(/^\s+/, "");
+    resizePromptInput();
+  }
+  renderImageTray();
+  updateFollowUpOptions();
+}
+
+function syncPendingSkillsWithPrompt() {
+  const text = String(els.promptInput?.value || "");
+  const mentioned = new Set();
+  const regex = /(?:^|\s)\$([a-zA-Z0-9_.:-]+)(?=\s|$)/g;
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    mentioned.add(match[1]);
+  }
+  let changed = false;
+  for (const name of mentioned) {
+    if (!state.pendingSkills.some((item) => item.name === name)) {
+      const found = state.skills.find((s) => s.name === name);
+      if (found) {
+        state.pendingSkills.push({
+          name: found.name,
+          path: found.path || "",
+          displayName: found.interface?.displayName || found.name,
+          description: found.interface?.shortDescription || found.shortDescription || found.description || ""
+        });
+        changed = true;
+      }
+    }
+  }
+  if (changed) renderImageTray();
+}
+
+function resolveTurnSkillsAndText(rawText, pendingSkills = []) {
+  const text = String(rawText || "").trim();
+  const byName = new Map();
+  for (const skill of pendingSkills || []) {
+    if (skill?.name) byName.set(skill.name, skill);
+  }
+  const regex = /(?:^|\s)\$([a-zA-Z0-9_.:-]+)(?=\s|$)/g;
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    const name = match[1];
+    if (!byName.has(name)) {
+      const found = state.skills.find((s) => s.name === name);
+      if (found) {
+        byName.set(found.name, {
+          name: found.name,
+          path: found.path || "",
+          displayName: found.interface?.displayName || found.name
+        });
+      }
+    }
+  }
+  const selectedSkills = [...byName.values()];
+  if (!selectedSkills.length) {
+    return { displayText: text, wireText: text, skillInputs: [] };
+  }
+  let wireText = text;
+  const missingTokens = [];
+  for (const skill of selectedSkills) {
+    const escaped = skill.name.replace(/[.*+?^${}()|[\]\\]/g, "\\async function loadModels() {");
+    const tokenRegex = new RegExp(`(^|\\s)\\${escaped}(?=\\s|$)`, "g");
+    const replacementLink = skill.path ? `[${skill.name}](${skill.path})` : `${skill.name}`;
+    if (tokenRegex.test(wireText)) {
+      wireText = wireText.replace(tokenRegex, `$1${replacementLink}`);
+    } else {
+      missingTokens.push(replacementLink);
+    }
+  }
+  if (missingTokens.length) {
+    wireText = [missingTokens.join(" "), wireText].filter(Boolean).join(" ").trim();
+  }
+  const displayTokens = selectedSkills
+    .filter((skill) => {
+      const escaped = skill.name.replace(/[.*+?^${}()|[\]\\]/g, "\\async function loadModels() {");
+      return !new RegExp(`(?:^|\\s)\\${escaped}(?=\\s|$)`).test(text);
+    })
+    .map((skill) => `${skill.name}`);
+  const displayText = [displayTokens.join(" "), text].filter(Boolean).join(" ").trim();
+  const skillInputs = selectedSkills
+    .filter((skill) => Boolean(skill.path))
+    .map((skill) => ({ type: "skill", name: skill.name, path: skill.path }));
+  return { displayText, wireText, skillInputs };
 }
 
 async function loadModels() {
@@ -1425,7 +1783,8 @@ async function loadThreads() {
       sortKey: "recency_at",
       sortDirection: "desc"
     });
-    state.threads = mergeCurrentThreadIntoList(result?.data || []);
+    const combined = mergeRemoteThreads(result?.data || [], state.desktopRemoteThreads);
+    state.threads = mergeCurrentThreadIntoList(combined);
     for (const thread of state.threads) {
       if (!thread?.id) continue;
       const activity = setThreadActivity(thread.id, {
@@ -1565,8 +1924,155 @@ function mergeCurrentThreadIntoList(threads) {
   return merged;
 }
 
+function getSelectedProject() {
+  const selected = els.projectSelect?.value;
+  if (!selected) return null;
+  if (state.desktopProjects?.length) {
+    const foundById = state.desktopProjects.find((p) => p.id === selected);
+    if (foundById) return foundById;
+    const foundByPath = state.desktopProjects.find((p) =>
+      (p.rootPaths || []).some((r) => isPathInside(selected, r))
+    );
+    if (foundByPath) return foundByPath;
+  }
+  return null;
+}
+
+function getSelectedCwd() {
+  const proj = getSelectedProject();
+  if (proj) return proj.primaryPath;
+  const opt = els.projectSelect?.selectedOptions?.[0];
+  return opt?.dataset?.cwd || els.projectSelect?.value || preferredScopedCwd();
+}
+
+function updateProjectInputState(project) {
+  const isRemote = project?.projectKind === "remote";
+  if (els.browseWorkspace) {
+    els.browseWorkspace.disabled = isRemote || state.desktopBridgeConnected !== true || !state.workspaceBrowserAvailable;
+    els.browseWorkspace.title = isRemote ? t("workspace.remoteNoBrowse") : "";
+    els.browseWorkspace.classList.toggle("disabled", isRemote);
+  }
+  if (els.cwdInput) {
+    els.cwdInput.value = project?.primaryPath || getSelectedCwd() || "";
+    els.cwdInput.readOnly = isRemote;
+  }
+}
+
+function setProjectSelection(target) {
+  if (!els.projectSelect) return;
+  if (!target) {
+    els.projectSelect.value = "";
+    updateProjectInputState(null);
+    return;
+  }
+
+  if (state.desktopProjects && state.desktopProjects.length) {
+    let matched = state.desktopProjects.find((p) => p.id === target);
+    if (!matched && typeof target === "string") {
+      matched = state.desktopProjects.find((p) =>
+        (p.rootPaths || []).some((r) => isPathInside(target, r))
+      );
+    }
+    if (matched) {
+      els.projectSelect.value = matched.id;
+      updateProjectInputState(matched);
+      return;
+    }
+  }
+
+  let value = target || preferredScopedCwd();
+  const isScopeRoot = state.threadFilterCwds.some((root) => samePath(root, value));
+  if (value && !isScopeRoot && !isProjectGroup(projectFromCwd(value))) {
+    els.projectSelect.value = preferredScopedCwd();
+    updateProjectInputState(null);
+    return;
+  }
+  if (value && ![...els.projectSelect.options].some((option) => option.value === value)) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = projectFromCwd(value).name;
+    els.projectSelect.append(option);
+  }
+  els.projectSelect.value = value;
+  updateProjectInputState(null);
+}
+
+function setProjectSelectionForThread(thread) {
+  if (!thread) return;
+  if (state.desktopProjects && state.desktopProjects.length) {
+    const proj = findProjectForThread(
+      thread,
+      state.desktopProjects,
+      state.desktopAssignments,
+      state.projectlessThreadIds
+    );
+    if (proj) {
+      setProjectSelection(proj.id);
+      return;
+    }
+  }
+  if (thread.cwd) {
+    setProjectSelection(thread.cwd);
+  }
+}
+
+
+export function applyDesktopState(desktopState) {
+  if (!desktopState) return;
+  state.desktopProjects = Array.isArray(desktopState.projects) ? desktopState.projects : [];
+  state.desktopAssignments = desktopState.assignments || {};
+  state.pinnedThreadIds = Array.isArray(desktopState.pinnedThreadIds) ? desktopState.pinnedThreadIds : [];
+  state.pinnedProjectIds = Array.isArray(desktopState.pinnedProjectIds) ? desktopState.pinnedProjectIds : [];
+  state.projectlessThreadIds = Array.isArray(desktopState.projectlessThreadIds) ? desktopState.projectlessThreadIds : [];
+  state.desktopRemoteThreads = Array.isArray(desktopState.remoteThreads) ? desktopState.remoteThreads : [];
+  if (state.desktopRemoteThreads.length > 0) {
+    state.threads = mergeRemoteThreads(state.threads, state.desktopRemoteThreads);
+  }
+  renderProjectOptions();
+  renderThreads();
+}
+
 function renderProjectOptions() {
   const previous = els.projectSelect.value;
+  els.projectSelect.innerHTML = "";
+
+  if (state.desktopProjects && state.desktopProjects.length > 0) {
+    if (!hasScopedToken()) {
+      const none = document.createElement("option");
+      none.value = "";
+      none.textContent = t("project.none");
+      els.projectSelect.append(none);
+    }
+
+    for (const proj of state.desktopProjects) {
+      const option = document.createElement("option");
+      option.value = proj.id;
+      option.dataset.cwd = proj.primaryPath || "";
+      option.dataset.projectId = proj.id;
+      option.dataset.projectKind = proj.projectKind;
+      option.dataset.hostId = proj.hostId || "";
+
+      if (proj.projectKind === "remote") {
+        const hostTag = proj.hostDisplayName || proj.hostId;
+        option.textContent = `[${t("project.remoteBadge")}] ${proj.name} (${hostTag})`;
+      } else {
+        option.textContent = proj.name;
+      }
+      els.projectSelect.append(option);
+    }
+
+    if (previous && [...els.projectSelect.options].some((option) => option.value === previous)) {
+      els.projectSelect.value = previous;
+    } else if (state.currentThread) {
+      setProjectSelectionForThread(state.currentThread);
+    } else if (hasScopedToken()) {
+      setProjectSelection(preferredScopedCwd());
+    }
+    const currentProj = getSelectedProject();
+    updateProjectInputState(currentProj);
+    return;
+  }
+
   const groupsByKey = new Map(
     groupThreadsByProject(state.threads)
       .filter(isProjectGroup)
@@ -1578,7 +2084,6 @@ function renderProjectOptions() {
   }
   const groups = sortProjectGroupsByActivity([...groupsByKey.values()], state.threadActivity);
 
-  els.projectSelect.innerHTML = "";
   if (!hasScopedToken()) {
     const none = document.createElement("option");
     none.value = "";
@@ -1602,22 +2107,6 @@ function renderProjectOptions() {
   }
 }
 
-function setProjectSelection(cwd) {
-  let value = cwd || preferredScopedCwd();
-  const isScopeRoot = state.threadFilterCwds.some((root) => samePath(root, value));
-  if (value && !isScopeRoot && !isProjectGroup(projectFromCwd(value))) {
-    els.projectSelect.value = preferredScopedCwd();
-    return;
-  }
-  if (value && ![...els.projectSelect.options].some((option) => option.value === value)) {
-    const option = document.createElement("option");
-    option.value = value;
-    option.textContent = projectFromCwd(value).name;
-    els.projectSelect.append(option);
-  }
-  els.projectSelect.value = value;
-}
-
 function renderThreads() {
   const term = els.searchThreads.value.trim().toLowerCase();
   els.threadList.innerHTML = "";
@@ -1631,8 +2120,27 @@ function renderThreads() {
     return;
   }
 
+  // 1. Pinned threads
+  const pinnedIds = new Set(state.pinnedThreadIds || []);
+  const pinnedThreads = [];
+  if (state.pinnedThreadIds?.length) {
+    for (const id of state.pinnedThreadIds) {
+      const found = filtered.find((thread) => thread.id === id);
+      if (found) pinnedThreads.push(found);
+    }
+  }
+
+  if (pinnedThreads.length) {
+    els.threadList.append(renderSectionTitle(t("thread.pinned")));
+    const section = document.createElement("section");
+    section.className = "pinned-thread-group";
+    for (const thread of pinnedThreads) section.append(renderThreadButton(thread));
+    els.threadList.append(section);
+  }
+
+  // 2. Active / attention threads (excluding pinned threads)
   const attentionThreads = filtered
-    .filter((thread) => activityPriority(activityForThread(thread.id)) < 4)
+    .filter((thread) => !pinnedIds.has(thread.id) && activityPriority(activityForThread(thread.id)) < 4)
     .sort((left, right) => {
       const priority = activityPriority(activityForThread(left.id)) - activityPriority(activityForThread(right.id));
       return priority || threadTimestamp(right) - threadTimestamp(left);
@@ -1647,29 +2155,58 @@ function renderThreads() {
     els.threadList.append(section);
   }
 
-  const { projects, directThreads } = splitThreadGroups(groupThreadsByProject(regularThreads, filtered));
+  // 3. Projects
+  let projects = [];
+  let directThreads = [];
+
+  if (state.desktopProjects && state.desktopProjects.length > 0) {
+    const grouped = groupThreadsByDesktopProjects({
+      threads: regularThreads,
+      desktopProjects: state.desktopProjects,
+      assignments: state.desktopAssignments,
+      projectlessIds: state.projectlessThreadIds,
+      rankingThreads: filtered,
+      activityByThread: state.threadActivity
+    });
+    projects = grouped.projects;
+    directThreads = grouped.directThreads;
+  } else {
+    const grouped = splitThreadGroups(groupThreadsByProject(regularThreads, filtered));
+    projects = grouped.projects;
+    directThreads = grouped.directThreads;
+  }
 
   if (projects.length) {
-    els.threadList.append(renderSectionTitle(t("thread.recentProjects")));
+    els.threadList.append(renderSectionTitle(t("thread.projects")));
     for (const group of projects) {
+      if (term && group.threads.length === 0) continue;
       els.threadList.append(renderProjectGroup(group, { forceExpanded: Boolean(term) }));
     }
   }
 
+  // 4. Direct conversations
   if (directThreads.length) {
-    els.threadList.append(renderSectionTitle(t("thread.conversations")));
-    const section = document.createElement("section");
-    section.className = "direct-thread-group";
-    for (const thread of directThreads) {
-      section.append(renderThreadButton(thread));
+    const unpinnedDirect = directThreads.filter((t) => !pinnedIds.has(t.id));
+    if (unpinnedDirect.length) {
+      els.threadList.append(renderSectionTitle(t("thread.conversations")));
+      const section = document.createElement("section");
+      section.className = "direct-thread-group";
+      for (const thread of unpinnedDirect) {
+        section.append(renderThreadButton(thread));
+      }
+      els.threadList.append(section);
     }
-    els.threadList.append(section);
   }
 }
 
 function threadMatchesSearch(thread, term) {
   if (!term) return true;
-  const project = projectFromCwd(thread.cwd);
+  const project = (state.desktopProjects?.length && findProjectForThread(
+    thread,
+    state.desktopProjects,
+    state.desktopAssignments,
+    state.projectlessThreadIds
+  )) || projectFromCwd(thread.cwd);
   const text = `${thread.name || ""} ${thread.preview || ""} ${thread.cwd || ""} ${project.name}`.toLowerCase();
   return text.includes(term);
 }
@@ -1681,27 +2218,81 @@ function renderSectionTitle(title) {
   return node;
 }
 
+function createNewThreadInProject(group) {
+  if (!group) return;
+  setProjectSelection(group.id);
+  createThread();
+  const proj = getSelectedProject() || group;
+  state.currentThread.cwd = proj.primaryPath || proj.cwd;
+  state.currentThread.selectedProjectId = proj.id;
+  state.currentThread.selectedHostId = proj.hostId;
+  updateProjectInputState(proj);
+}
+
 function renderProjectGroup(group, options = {}) {
   const section = document.createElement("section");
-  const isCollapsed = !options.forceExpanded && state.collapsedProjects.has(group.key);
+  const isDefaultCollapsed = state.collapsedProjects === null;
+  const isCollapsed = !options.forceExpanded && (
+    isDefaultCollapsed ? true : state.collapsedProjects.has(group.key)
+  );
   const showAll = state.expandedProjects.has(group.key);
   const visibleThreads = isCollapsed ? [] : showAll ? group.threads : group.threads.slice(0, 6);
+  const isRemote = group.projectKind === "remote";
+  const isProjectPinned = (state.pinnedProjectIds || []).includes(group.id);
   section.className = `project-group ${isCollapsed ? "collapsed" : ""}`;
+
+  const icon = isRemote ? remoteIcon() : folderIcon();
+  const hostTag = isRemote && (group.hostDisplayName || group.hostId)
+    ? `<span class="project-host-tag">${escapeHtml(group.hostDisplayName || group.hostId)}</span><span class="project-host-dot" title="${escapeHtml(t("project.remoteReady"))}"></span>`
+    : "";
+  const titleAttr = `${group.name}${group.hostDisplayName ? ' (' + group.hostDisplayName + ')' : ''} · ${group.cwd || group.primaryPath || ''}`;
+
   section.innerHTML = `
-    <button class="project-heading" type="button" title="${escapeHtml(group.cwd)}" aria-expanded="${String(!isCollapsed)}">
+    <button class="project-heading" type="button" title="${escapeHtml(titleAttr)}" aria-expanded="${String(!isCollapsed)}">
       <span class="project-chevron" aria-hidden="true">›</span>
-      ${folderIcon()}
-      <span class="project-name">${escapeHtml(group.name)}</span>
-      <span class="project-badge">${group.totalCount || group.threads.length}</span>
+      ${icon}
+      <span class="project-title-wrap">
+        <span class="project-name">${escapeHtml(group.name)}</span>
+        ${hostTag}
+      </span>
+      <span class="project-pin-btn ${isProjectPinned ? "is-pinned" : ""}" role="button" tabindex="0" title="${escapeHtml(isProjectPinned ? t("project.unpin") : t("project.pin"))}" aria-label="${escapeHtml(isProjectPinned ? t("project.unpin") : t("project.pin"))}">
+        ${pinIcon(isProjectPinned)}
+      </span>
+      <span class="project-badge">${group.totalCount ?? group.threads.length}</span>
     </button>
   `;
 
-  section.querySelector(".project-heading").addEventListener("click", () => {
-    if (state.collapsedProjects.has(group.key)) state.collapsedProjects.delete(group.key);
-    else state.collapsedProjects.add(group.key);
+  section.querySelector(".project-heading").addEventListener("click", (e) => {
+    if (e.target.closest(".project-pin-btn")) {
+      e.stopPropagation();
+      e.preventDefault();
+      toggleProjectPin(group.id, !isProjectPinned);
+      return;
+    }
+    if (state.collapsedProjects === null) {
+      state.collapsedProjects = new Set(
+        (state.desktopProjects || []).map((p) => `project:${p.id}`)
+      );
+      state.collapsedProjects.delete(group.key);
+    } else if (state.collapsedProjects.has(group.key)) {
+      state.collapsedProjects.delete(group.key);
+    } else {
+      state.collapsedProjects.add(group.key);
+    }
     persistCollapsedProjects();
     renderThreads();
   });
+
+  if (!isCollapsed && group.threads.length === 0) {
+    const emptyRow = document.createElement("button");
+    emptyRow.className = "project-empty-create";
+    emptyRow.type = "button";
+    emptyRow.innerHTML = `<span>${escapeHtml(t("project.newThread"))}</span>`;
+    emptyRow.addEventListener("click", () => {
+      createNewThreadInProject(group);
+    });
+    section.append(emptyRow);
+  }
 
   for (const thread of visibleThreads) {
     section.append(renderThreadButton(thread));
@@ -1738,13 +2329,129 @@ function renderProjectGroup(group, options = {}) {
   return section;
 }
 
+
+function pinIcon(isPinned) {
+  if (isPinned) {
+    return `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6l.8.8.8-.8v-6H18v-2l-2-2Z"/></svg>`;
+  }
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6l.8.8.8-.8v-6H18v-2l-2-2Z"/></svg>`;
+}
+
+async function toggleThreadPin(threadId, pinned) {
+  if (!threadId) return;
+  const current = new Set(state.pinnedThreadIds || []);
+  if (pinned) current.add(threadId);
+  else current.delete(threadId);
+  state.pinnedThreadIds = Array.from(current);
+  renderThreads();
+
+  try {
+    const url = authenticatedUrl(`/api/threads/${encodeURIComponent(threadId)}/pin`, state.token);
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pinned })
+    });
+    if (!res.ok) {
+      await rpc("thread/pin", { threadId, pinned }).catch(() => {});
+    }
+  } catch {
+    await rpc("thread/pin", { threadId, pinned }).catch(() => {});
+  }
+}
+
+async function toggleProjectPin(projectId, pinned) {
+  if (!projectId) return;
+  const current = new Set(state.pinnedProjectIds || []);
+  if (pinned) current.add(projectId);
+  else current.delete(projectId);
+  state.pinnedProjectIds = Array.from(current);
+
+  if (state.desktopProjects?.length) {
+    const proj = state.desktopProjects.find((p) => p.id === projectId);
+    if (proj && pinned) {
+      state.desktopProjects = [proj, ...state.desktopProjects.filter((p) => p.id !== projectId)];
+    }
+  }
+  renderThreads();
+
+  try {
+    const url = authenticatedUrl(`/api/projects/${encodeURIComponent(projectId)}/pin`, state.token);
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pinned })
+    });
+    if (!res.ok) {
+      await rpc("project/pin", { projectId, pinned }).catch(() => {});
+    }
+  } catch {
+    await rpc("project/pin", { projectId, pinned }).catch(() => {});
+  }
+}
+
+function initSidebarResizer() {
+  const resizer = document.querySelector("#sidebarResizer");
+  const sidebar = els.sidebar;
+  if (!resizer || !sidebar) return;
+
+  const STORAGE_KEY = "codex-webui-sidebar-width";
+  const DEFAULT_WIDTH = 300;
+  const MIN_WIDTH = 240;
+  const MAX_WIDTH = 640;
+
+  const savedWidth = parseInt(localStorage.getItem(STORAGE_KEY), 10);
+  if (savedWidth && savedWidth >= MIN_WIDTH && savedWidth <= MAX_WIDTH) {
+    document.documentElement.style.setProperty("--sidebar-width", `${savedWidth}px`);
+  }
+
+  let startX = 0;
+  let startWidth = 0;
+
+  resizer.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    startX = e.clientX;
+    startWidth = sidebar.getBoundingClientRect().width;
+    resizer.classList.add("is-resizing");
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "col-resize";
+    resizer.setPointerCapture(e.pointerId);
+  });
+
+  resizer.addEventListener("pointermove", (e) => {
+    if (!resizer.hasPointerCapture(e.pointerId)) return;
+    const delta = e.clientX - startX;
+    const newWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, Math.round(startWidth + delta)));
+    document.documentElement.style.setProperty("--sidebar-width", `${newWidth}px`);
+    localStorage.setItem(STORAGE_KEY, String(newWidth));
+  });
+
+  const onPointerUp = (e) => {
+    if (resizer.hasPointerCapture(e.pointerId)) {
+      resizer.releasePointerCapture(e.pointerId);
+    }
+    resizer.classList.remove("is-resizing");
+    document.body.style.userSelect = "";
+    document.body.style.cursor = "";
+  };
+
+  resizer.addEventListener("pointerup", onPointerUp);
+  resizer.addEventListener("pointercancel", onPointerUp);
+
+  resizer.addEventListener("dblclick", () => {
+    document.documentElement.style.setProperty("--sidebar-width", `${DEFAULT_WIDTH}px`);
+    localStorage.removeItem(STORAGE_KEY);
+  });
+}
+
 function renderThreadButton(thread) {
   const link = document.createElement("a");
   const isActive = state.currentThread?.id === thread.id;
   const isLoading = state.loadingThreadId === thread.id;
+  const isPinned = (state.pinnedThreadIds || []).includes(thread.id);
   const activity = activityForThread(thread.id);
   const activityState = activity.state || THREAD_ACTIVITY.IDLE;
-  link.className = `thread-item activity-${activityState} ${activity.unread ? "unread" : ""} ${isActive ? "active" : ""} ${isLoading ? "loading" : ""}`;
+  link.className = `thread-item activity-${activityState} ${activity.unread ? "unread" : ""} ${isActive ? "active" : ""} ${isLoading ? "loading" : ""} ${isPinned ? "is-pinned" : ""}`;
   link.href = threadUrl(thread.id);
   link.title = t("thread.openNewTab");
   if (isActive) link.setAttribute("aria-current", "page");
@@ -1754,9 +2461,18 @@ function renderThreadButton(thread) {
       <span class="thread-name">${escapeHtml(thread.name || thread.preview || t("thread.untitled"))}</span>
       <span class="thread-status">${escapeHtml(activityLabel(activity))}</span>
     </span>
+    <button type="button" class="thread-pin-btn ${isPinned ? "is-pinned" : ""}" title="${escapeHtml(isPinned ? t("thread.unpin") : t("thread.pin"))}" aria-label="${escapeHtml(isPinned ? t("thread.unpin") : t("thread.pin"))}">
+      ${pinIcon(isPinned)}
+    </button>
     <span class="thread-time">${formatRelativeTime(thread.updatedAt || thread.createdAt)}</span>
   `;
   link.addEventListener("click", (event) => {
+    if (event.target.closest(".thread-pin-btn")) {
+      event.preventDefault();
+      event.stopPropagation();
+      toggleThreadPin(thread.id, !isPinned);
+      return;
+    }
     if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
     openThread(thread);
@@ -1868,29 +2584,41 @@ function normalizeUnixSeconds(value) {
 }
 
 function createThread() {
-  const cwd = els.projectSelect.value || preferredScopedCwd();
-  if (cwd) setProjectSelection(cwd);
+  const proj = getSelectedProject();
+  const cwd = proj ? proj.primaryPath : getSelectedCwd();
+  if (proj) setProjectSelectionForThread({ cwd, projectId: proj.id, hostId: proj.hostId });
+  else if (cwd) setProjectSelection(cwd);
   updateThreadUrl("");
   state.currentThread = {
     draft: true,
     name: t("thread.new"),
     preview: t("thread.new"),
     cwd,
+    projectId: proj?.id || null,
+    hostId: proj?.hostId || "local",
+    projectKind: proj?.projectKind || "local",
     status: "draft"
   };
   state.initialThreadRestorePending = false;
   state.messages = [];
   state.currentThreadSettings = null;
+  state.threadLockConflict = false;
+  updateLockBanner();
   state.lastMessageAt = null;
   state.lastLoadStats = null;
   state.threadLoadStats = null;
   resetTurnPaging();
+  if (cwd) loadSkills(cwd).catch(() => {});
   updateThreadHeader();
   updateProjectSelectState();
   updateTrafficSummary();
   renderEmpty(
     t("thread.new"),
-    cwd ? t("empty.newThreadProject", { project: projectFromCwd(cwd).name }) : t("empty.noProject")
+    proj
+      ? (proj.projectKind === "remote"
+          ? t("empty.newThreadRemote", { project: "" + proj.name + " (" + (proj.hostDisplayName || proj.hostId) + ")" })
+          : t("empty.newThreadProject", { project: proj.name }))
+      : (cwd ? t("empty.newThreadProject", { project: projectFromCwd(cwd).name }) : t("empty.noProject"))
   );
   renderThreads();
   els.sidebar.classList.remove("open");
@@ -1898,9 +2626,21 @@ function createThread() {
 }
 
 async function createThreadOnServer() {
-  const cwd = state.currentThread?.cwd || els.projectSelect.value || preferredScopedCwd();
+  const selectedProj = getSelectedProject()
+    || (state.currentThread?.selectedProjectId ? state.desktopProjects?.find((p) => p.id === state.currentThread.selectedProjectId) : null)
+    || (state.currentThread?.projectId ? state.desktopProjects?.find((p) => p.id === state.currentThread.projectId) : null);
+  const isRemote = selectedProj?.projectKind === "remote"
+    || (state.currentThread?.selectedHostId && state.currentThread.selectedHostId !== "local")
+    || (state.currentThread?.hostId && state.currentThread.hostId !== "local");
+  const cwd = isRemote
+    ? (selectedProj?.primaryPath || selectedProj?.remotePath || state.currentThread?.cwd)
+    : (state.currentThread?.cwd || selectedProj?.primaryPath || getSelectedCwd() || preferredScopedCwd());
+  const hostId = isRemote ? (selectedProj?.hostId || state.currentThread?.selectedHostId || state.currentThread?.hostId) : undefined;
+  const projectId = selectedProj?.id || state.currentThread?.selectedProjectId || state.currentThread?.projectId || undefined;
   const params = buildSharedThreadStart({
     cwd,
+    hostId,
+    projectId,
     model: els.modelSelect.value,
     effort: els.reasoningSelect.value,
     permissionMode: els.permissionSelect.value,
@@ -1941,6 +2681,9 @@ async function openThread(threadOrId, { showFailure = true } = {}) {
   const previewThread = typeof threadOrId === "string"
     ? state.threads.find((thread) => thread.id === threadId)
     : threadOrId;
+  const threadHostId = previewThread?.hostId && previewThread.hostId !== "local"
+    ? previewThread.hostId
+    : undefined;
   const cachedPage = state.recentThreadCache.get(threadId);
   const cachedSettings = state.threadSettingsCache.get(threadId);
   let restoredCachedPage = false;
@@ -1955,10 +2698,12 @@ async function openThread(threadOrId, { showFailure = true } = {}) {
   state.lastLoadStats = null;
   state.currentThread = previewThread || { id: threadId };
   state.currentThreadSettings = null;
+  state.threadLockConflict = false;
+  updateLockBanner();
   const restoredCachedSettings = !needsResume(previewThread)
     && restoreThreadSettingsCache(cachedSettings);
   state.lastMessageAt = threadTimestamp(state.currentThread) || null;
-  setProjectSelection(state.currentThread.cwd || "");
+  setProjectSelectionForThread(state.currentThread);
   updateProjectSelectState();
   state.messages = [];
   resetTurnPaging();
@@ -1974,6 +2719,7 @@ async function openThread(threadOrId, { showFailure = true } = {}) {
     opened = true;
     contentGate.resolve();
   }
+  if (state.currentThread?.cwd) loadSkills(state.currentThread.cwd).catch(() => {});
   state.threadLoadStats.showLoading = !restoredCachedPage;
   els.sendButton.disabled = isSendBlocked();
   updateThreadHeader();
@@ -2020,7 +2766,8 @@ async function openThread(threadOrId, { showFailure = true } = {}) {
         threadId,
         limit: TURN_PAGE_LIMIT,
         sortDirection: "desc",
-        itemsView: TURN_ITEMS_VIEW
+        itemsView: TURN_ITEMS_VIEW,
+        ...(threadHostId ? { hostId: threadHostId } : {})
       },
       { traffic: state.threadLoadStats, label: t("load.readLatest") }
     )
@@ -2046,7 +2793,7 @@ async function openThread(threadOrId, { showFailure = true } = {}) {
       updateThreadLoadPhase(state.threadLoadStats, t("load.readSettings"));
       const readResult = await rpc(
         "thread/read",
-        { threadId },
+        { threadId, ...(threadHostId ? { hostId: threadHostId } : {}) },
         { traffic: state.threadLoadStats, label: t("load.readSettings") }
       );
       if (loadSeq !== state.threadLoadSeq) return;
@@ -2060,7 +2807,7 @@ async function openThread(threadOrId, { showFailure = true } = {}) {
       await loadPermissionModes(state.currentThread?.cwd || "");
       const resumeResult = await rpc(
         "thread/resume",
-        { threadId },
+        { threadId, ...(threadHostId ? { hostId: threadHostId } : {}) },
         { traffic: state.threadLoadStats, label: t("load.readSettings") }
       );
       if (loadSeq !== state.threadLoadSeq) return;
@@ -2087,11 +2834,31 @@ async function openThread(threadOrId, { showFailure = true } = {}) {
       updateTrafficSummary();
     }
   } catch (error) {
+    const isLockConflict = isLockConflictError(error);
+    if (isLockConflict) {
+      state.threadLockConflict = true;
+    }
     if (latestPagePromise && !fetchedLatestPage) await latestPagePromise;
     opened = opened || restoredCachedPage || fetchedLatestPage;
+    if (!opened && (previewThread?.isRemote || previewThread?.projectKind === "remote" || threadHostId)) {
+      opened = true;
+      state.messages = [{
+        id: "msg_remote_" + threadId,
+        role: "user",
+        text: previewThread?.preview || previewThread?.title || t("project.remoteReady"),
+        createdAt: threadTimestamp(previewThread)
+      }];
+      renderMessages(true);
+      addSystemMessage(t("project.remoteSessionNotice", {
+        host: previewThread?.hostDisplayName || previewThread?.hostId || "100.108.151.113"
+      }), false);
+      addSystemMessage(t("project.remoteErrorNotice"), false);
+    }
     if (loadSeq === state.threadLoadSeq) {
-      if (showFailure && opened) addSystemMessage(error.message || t("load.retry"), false);
-      else if (showFailure) renderEmpty(t("load.failedTitle"), error.message || t("load.retry"));
+      if (showFailure && !isLockConflict) {
+        if (opened) addSystemMessage(error.message || t("load.retry"), false);
+        else renderEmpty(t("load.failedTitle"), error.message || t("load.retry"));
+      }
     }
   } finally {
     contentGate.resolve();
@@ -2104,6 +2871,7 @@ async function openThread(threadOrId, { showFailure = true } = {}) {
       renderThreads();
       if (restoredCachedPage && !fetchedLatestPage) scheduleCurrentThreadSync();
       else scheduleCurrentThreadSync(0);
+      updateLockBanner();
     }
   }
   if (opened && loadSeq === state.threadLoadSeq && state.currentThread?.id === threadId) {
@@ -2248,16 +3016,19 @@ function updateThreadUrl(threadId) {
 
 async function resumeCurrentThread(options = {}) {
   const showError = options.showError !== false;
+  const force = Boolean(options.force || state.threadLockConflict);
   const thread = state.currentThread;
-  if (!thread?.id || !needsResume(thread) || state.resumingThreadId) return false;
+  if (!thread?.id || (!force && !needsResume(thread)) || state.resumingThreadId) return false;
 
   const threadId = thread.id;
   state.resumingThreadId = threadId;
   updateResumeStatus(thread);
+  updateLockBanner();
   els.threadMeta.textContent = `${shortPath(thread.cwd)} · ${t("status.resuming")}`;
 
   try {
     const result = await rpc("thread/resume", { threadId });
+    state.threadLockConflict = false;
     if (state.currentThread?.id === threadId) {
       state.currentThread = result.thread || state.currentThread;
       applyThreadSettings(threadSettingsFromResume(result));
@@ -2266,13 +3037,92 @@ async function resumeCurrentThread(options = {}) {
     renderThreads();
     return true;
   } catch (error) {
-    if (showError) addSystemMessage(error.message || t("error.resume"));
+    const isLockConflict = isLockConflictError(error);
+    if (isLockConflict) {
+      state.threadLockConflict = true;
+    }
+    if (showError && !isLockConflict) addSystemMessage(error.message || t("error.resume"));
     throw error;
   } finally {
     if (state.resumingThreadId === threadId) {
       state.resumingThreadId = null;
     }
     updateResumeStatus(state.currentThread);
+    updateLockBanner();
+  }
+}
+
+function isLockConflictError(error) {
+  const msg = String(error?.message || error || "").toLowerCase();
+  return (
+    msg.includes("already has an active writer") ||
+    msg.includes("active writer") ||
+    msg.includes("is locked by another") ||
+    msg.includes("another app")
+  );
+}
+
+function updateLockBanner() {
+  if (!els.threadLockBanner) return;
+  const isLocked = Boolean(state.threadLockConflict && state.currentThread?.id && !state.currentThread?.draft);
+  els.threadLockBanner.classList.toggle("hidden", !isLocked);
+  if (els.composer) {
+    els.composer.classList.remove("locked-hidden");
+  }
+  if (els.lockRetryBtn) {
+    els.lockRetryBtn.disabled = Boolean(state.resumingThreadId || state.forkingThreadId);
+    els.lockRetryBtn.textContent = state.resumingThreadId ? t("status.resuming") : t("thread.retry");
+  }
+  if (els.lockForkBtn) {
+    els.lockForkBtn.disabled = Boolean(state.resumingThreadId || state.forkingThreadId);
+    els.lockForkBtn.textContent = state.forkingThreadId ? t("thread.forking") : t("thread.fork");
+  }
+}
+
+async function retryCurrentThreadResume() {
+  if (state.resumingThreadId || state.forkingThreadId) return;
+  const threadId = state.currentThread?.id;
+  if (!threadId) return;
+  try {
+    const success = await resumeCurrentThread({ showError: false, force: true });
+    if (success) {
+      state.threadLockConflict = false;
+      updateLockBanner();
+      await openThread(threadId);
+    }
+  } catch (error) {
+    if (isLockConflictError(error)) {
+      state.threadLockConflict = true;
+      updateLockBanner();
+    }
+  }
+}
+
+async function forkCurrentThread() {
+  const current = state.currentThread;
+  if (!current?.id || state.forkingThreadId || state.resumingThreadId) return;
+
+  const threadId = current.id;
+  state.forkingThreadId = threadId;
+  updateLockBanner();
+
+  try {
+    const result = await rpc("thread/fork", { threadId });
+    const newThread = result?.thread || result;
+    if (newThread?.id) {
+      state.threadLockConflict = false;
+      updateLockBanner();
+      await loadThreads();
+      await openThread(newThread);
+      addSystemMessage(t("thread.forkSuccess"));
+    } else {
+      throw new Error(t("thread.forkFailed"));
+    }
+  } catch (error) {
+    addSystemMessage(error.message || t("thread.forkFailed"));
+  } finally {
+    state.forkingThreadId = null;
+    updateLockBanner();
   }
 }
 
@@ -2336,22 +3186,25 @@ async function sendTurn(text, { queue = false, expectedActiveTurnId = null } = {
       throw new Error(t("error.followUpTurnEnded"));
     }
 
+    const { displayText, wireText, skillInputs } = resolveTurnSkillsAndText(text, state.pendingSkills);
     state.followLiveOutput = true;
     els.promptInput.value = "";
     resizePromptInput();
     state.pendingImages = [];
+    state.pendingSkills = [];
+    closeSkillMenu();
     renderImageTray();
     revokeImagePreviews(images);
     state.lastMessageAt = currentUnixSeconds();
     const queued = Boolean(queue && activeTurnId);
-    const clientUserMessageId = crypto.randomUUID();
+    const clientUserMessageId = createClientId();
     if (!activeTurnId) startReplyProgress(threadId);
-    const automationHeartbeat = parseAutomationHeartbeat(text);
+    const automationHeartbeat = parseAutomationHeartbeat(displayText);
     if (!queued) {
       addMessage({
         role: "user",
         kind: automationHeartbeat ? "automationHeartbeat" : undefined,
-        text,
+        text: displayText,
         automationHeartbeat,
         images: images.map((image) => ({ kind: "source", source: image.path })),
         clientUserMessageId,
@@ -2361,11 +3214,23 @@ async function sendTurn(text, { queue = false, expectedActiveTurnId = null } = {
     }
 
     if (needsResume(state.currentThread)) {
-      await resumeCurrentThread({ showError: false });
+      try {
+        await resumeCurrentThread({ showError: false });
+      } catch (err) {
+        if (isLockConflictError(err)) {
+          state.threadLockConflict = false;
+          updateLockBanner();
+        } else {
+          stopReplyProgress(threadId);
+          removePendingReplyMessages(threadId);
+          throw err;
+        }
+      }
     }
 
     const input = [
-      ...(text ? [{ type: "text", text, text_elements: [] }] : []),
+      ...(wireText ? [{ type: "text", text: wireText, text_elements: [] }] : []),
+      ...skillInputs,
       ...images.map((image) => ({ type: "localImage", path: image.path }))
     ];
     const request = buildPromptRequest({
@@ -2375,7 +3240,18 @@ async function sendTurn(text, { queue = false, expectedActiveTurnId = null } = {
       clientUserMessageId,
       queue: queued
     });
-    const result = await rpc(request.method, request.params);
+    let result;
+    try {
+      result = await rpc(request.method, request.params);
+    } catch (err) {
+      if (isLockConflictError(err)) {
+        state.threadLockConflict = true;
+        updateLockBanner();
+      }
+      stopReplyProgress(threadId);
+      removePendingReplyMessages(threadId);
+      throw err;
+    }
     if (request.mode === "queue") {
       addSystemMessage(t("composer.queued"));
       return;
@@ -2816,6 +3692,11 @@ function toolResultText(result) {
 
 function cleanUserText(text) {
   let next = String(text || "").trim();
+  const inlineSkills = new Set();
+  next = next.replace(/\[\$([a-zA-Z0-9_.:-]+)\]\([^)\r\n]+\)/g, (_, name) => {
+    inlineSkills.add(name);
+    return `${name}`;
+  });
   next = next.replace(/# Files mentioned by the user:[\s\S]*?(?=\n## My request for Codex:|$)/g, "").trim();
   next = next.replace(/# Browser comments:[\s\S]*?(?=\n# In app browser:|\n## My request for Codex:|$)/g, "").trim();
   next = next.replace(/# In app browser:\s*(?:\n- .*)*\s*/g, "").trim();
@@ -2824,6 +3705,7 @@ function cleanUserText(text) {
     .split(/\r?\n/)
     .filter((line) => {
       const value = line.trim();
+      if (value.startsWith("$") && inlineSkills.has(value.slice(1))) return false;
       return value !== "In app browser:"
         && !value.startsWith("- The user has the in-app browser open.")
         && !value.startsWith("- Current URL:")
@@ -2899,10 +3781,19 @@ function handleMessage(message, rawBytes = 0) {
     state.workspaceBrowserAvailable = Boolean(message.capabilities?.workspaceBrowser);
     setDesktopBridgeStatus(Boolean(message.desktopBridgeConnected));
     state.threadFilterCwds = scopeCwdsFrom(message);
+    if (message.desktopState) {
+      applyDesktopState(message.desktopState);
+    }
     if (!els.cwdInput.value) els.cwdInput.value = message.defaultCwd || "";
     renderProjectOptions();
     reconcileRequestActivities(message.pendingServerRequests || []);
     reconcileApprovals(message.pendingServerRequests || []);
+    return;
+  }
+  if (message.type === "desktop-state-updated") {
+    if (message.state) {
+      applyDesktopState(message.state);
+    }
     return;
   }
   if (message.type === "rpc-result") {
@@ -2979,6 +3870,11 @@ function handleNotification(notification) {
     });
     if (willRetry) ensureReplyProgressIndicator(params.threadId, shouldStickToBottom);
     renderMessages(shouldStickToBottom);
+    return;
+  }
+
+  if (method === "skills/changed") {
+    loadSkills(currentEffectiveCwd(), { forceReload: true }).catch(() => {});
     return;
   }
 
@@ -4400,7 +5296,7 @@ function setFollowUpMenuOpen(open) {
 
 function updateFollowUpOptions() {
   if (!els.followUpMenu) return;
-  const hasPrompt = Boolean(els.promptInput.value.trim() || state.pendingImages.length);
+  const hasPrompt = Boolean(els.promptInput.value.trim() || state.pendingImages.length || state.pendingSkills.length);
   for (const option of els.followUpMenu.querySelectorAll("[data-follow-up-mode]")) {
     const needsPrompt = option.dataset.followUpMode !== "stop";
     option.disabled = Boolean(state.interruptingTurnId) || (needsPrompt && !hasPrompt);
@@ -4748,11 +5644,35 @@ function projectFromCwd(value) {
   };
 }
 
+function isAbsolutePath(val) {
+  if (!val || typeof val !== "string") return false;
+  return /^[a-zA-Z]:[\\/]/.test(val) || val.startsWith("/") || val.startsWith("\\\\");
+}
+
+function getInitialWorkspacePath() {
+  const currentCwd = state.currentThread?.cwd?.trim();
+  if (currentCwd && isAbsolutePath(currentCwd)) return currentCwd;
+
+  const proj = getSelectedProject();
+  if (proj && proj.projectKind === "local" && proj.primaryPath && isAbsolutePath(proj.primaryPath)) {
+    return proj.primaryPath;
+  }
+
+  const cwdVal = els.cwdInput?.value?.trim();
+  if (cwdVal && isAbsolutePath(cwdVal)) return cwdVal;
+
+  const scoped = preferredScopedCwd();
+  if (scoped && isAbsolutePath(scoped)) return scoped;
+
+  return "";
+}
+
 async function openWorkspacePicker() {
   els.workspacePicker.classList.remove("hidden");
   els.workspaceError.classList.add("hidden");
   els.workspaceName.value = "";
-  await loadWorkspaceDirectory(els.projectSelect.value || "");
+  const initial = getInitialWorkspacePath();
+  await loadWorkspaceDirectory(initial);
 }
 
 function closeWorkspacePicker() {
@@ -4764,12 +5684,20 @@ async function loadWorkspaceDirectory(directory = "") {
   els.workspaceError.classList.add("hidden");
   try {
     const url = new URL(authenticatedUrl("/api/workspaces", state.token), window.location.origin);
-    if (directory) url.searchParams.set("path", directory);
+    if (directory && isAbsolutePath(directory)) url.searchParams.set("path", directory);
     const response = await fetch(url);
     const payload = await response.json();
-    if (!response.ok) throw new Error(payload.error || t("error.request"));
+    if (!response.ok) {
+      if (directory) {
+        return await loadWorkspaceDirectory("");
+      }
+      throw new Error(payload.error || t("error.request"));
+    }
     renderWorkspaceDirectory(payload);
   } catch (error) {
+    if (directory) {
+      return await loadWorkspaceDirectory("");
+    }
     showWorkspaceError(error.message || t("error.request"));
   }
 }
@@ -4839,7 +5767,7 @@ async function selectWorkspace(directory) {
   setProjectSelection(directory);
   updateThreadHeader();
   renderEmpty(t("thread.new"), t("empty.newThreadProject", { project: projectFromCwd(directory).name }));
-  await loadPermissionModes(directory);
+  await Promise.allSettled([loadPermissionModes(directory), loadSkills(directory)]);
   closeWorkspacePicker();
 }
 
@@ -4937,6 +5865,16 @@ function byteLengthText(text) {
 
 function encodedJsonBytes(value) {
   return byteLengthText(JSON.stringify(value));
+}
+
+function remoteIcon() {
+  return `
+    <svg class="folder-icon remote-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6Zm0 9a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-3Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+      <circle cx="7.5" cy="7.5" r="1" fill="currentColor"/>
+      <circle cx="7.5" cy="16.5" r="1" fill="currentColor"/>
+    </svg>
+  `;
 }
 
 function folderIcon() {

@@ -159,6 +159,136 @@ test("Desktop broker starts one managed WebUI and stops it with the broker", { t
   assert.equal(await canConnectToPort(port), false);
 });
 
+test("Desktop broker restarts managed WebUI on unexpected exit", { timeout: 30000 }, async (t) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "codex-webui-restart-test-"));
+  const pipe = process.platform === "win32"
+    ? `\\\\.\\pipe\\codex-webui-restart-${process.pid}-${randomBytes(6).toString("hex")}`
+    : path.join(dataDir, "bridge.sock");
+  const port = await freePort();
+  const token = `restart-${randomBytes(12).toString("hex")}`;
+  const broker = spawn(process.execPath, [brokerPath, "app-server", "--analytics-default-enabled"], {
+    cwd: rootDir,
+    env: {
+      ...process.env,
+      CODEX_WEBUI_DATA_DIR: dataDir,
+      CODEX_WEBUI_DESKTOP_LIFECYCLE: "1",
+      CODEX_WEBUI_TOKEN: token,
+      CODEX_WEBUI_TERMINAL_QR: "0",
+      CODEX_DESKTOP_BRIDGE_PIPE: pipe,
+      CODEX_DESKTOP_BRIDGE_CODEX_PATH: process.execPath,
+      CODEX_DESKTOP_BRIDGE_CODEX_ARGS_JSON: JSON.stringify([fakeCodexPath]),
+      CODEX_WEBUI_HOST_ADDRESS: "127.0.0.1",
+      CODEX_WEBUI_PORT: String(port)
+    },
+    stdio: ["pipe", "pipe", "pipe"]
+  });
+  t.after(async () => {
+    if (broker.exitCode === null) broker.kill();
+    await removeWithRetry(dataDir);
+  });
+  let stderr = "";
+  broker.stderr.on("data", (chunk) => stderr += chunk.toString("utf8"));
+  const desktop = lineQueue(broker.stdout);
+  broker.stdin.write(`${JSON.stringify({ id: 1, method: "initialize", params: {} })}\n`);
+  await desktop.next((message) => message.id === 1);
+
+  const info = await waitForHttp(`http://127.0.0.1:${port}/api/info?token=${encodeURIComponent(token)}`);
+  assert.equal(info.bridgeMode, "desktop");
+  await waitForText(() => stderr, /Started Desktop-managed WebUI/);
+
+  const match = stderr.match(/Started Desktop-managed WebUI on port \d+ \(PID (\d+)\)/);
+  assert.ok(match, "Found WebUI PID");
+  const webUiPid = Number(match[1]);
+
+  try {
+    process.kill(webUiPid, "SIGTERM");
+  } catch {}
+
+  await waitForText(() => stderr, /Scheduling Managed WebUI restart in/);
+
+  const matches = () => [...stderr.matchAll(/Started Desktop-managed WebUI on port \d+ \(PID (\d+)\)/g)];
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    if (matches().length >= 2) break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.equal(matches().length, 2, "Expected WebUI to be restarted once");
+
+  const info2 = await waitForHttp(`http://127.0.0.1:${port}/api/info?token=${encodeURIComponent(token)}`);
+  assert.equal(info2.bridgeMode, "desktop");
+
+  const exited = new Promise((resolve) => broker.once("exit", resolve));
+  broker.kill();
+  await exited;
+  await waitForPortClosed(port);
+  assert.equal(await canConnectToPort(port), false);
+});
+
+test("WebUI server retries port binding on transient EADDRINUSE", { timeout: 20000 }, async (t) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "codex-webui-retry-port-test-"));
+  const port = await freePort();
+  const token = `retry-${randomBytes(12).toString("hex")}`;
+
+  const tempServer = net.createServer((socket) => socket.end());
+  await new Promise((resolve, reject) => tempServer.listen(port, "127.0.0.1", resolve).once("error", reject));
+
+  const serverProcess = spawn(process.execPath, [path.join(rootDir, "server", "index.js")], {
+    cwd: rootDir,
+    env: {
+      ...process.env,
+      PORT: String(port),
+      HOST: "127.0.0.1",
+      CODEX_WEBUI_DATA_DIR: dataDir,
+      CODEX_WEBUI_TOKEN: token,
+      CODEX_WEBUI_TERMINAL_QR: "0"
+    },
+    stdio: ["pipe", "pipe", "pipe"]
+  });
+
+  t.after(async () => {
+    if (serverProcess.exitCode === null) serverProcess.kill();
+    await removeWithRetry(dataDir);
+  });
+
+  setTimeout(() => {
+    tempServer.close();
+  }, 600);
+
+  const info = await waitForHttp(`http://127.0.0.1:${port}/api/info?token=${encodeURIComponent(token)}`);
+  assert.ok(info);
+
+  serverProcess.kill();
+  await new Promise((resolve) => serverProcess.once("exit", resolve));
+});
+
+test("Localhost requests can access WebUI without a token", { timeout: 20000 }, async (t) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "codex-webui-local-notoken-test-"));
+  const port = await freePort();
+
+  const serverProcess = spawn(process.execPath, [path.join(rootDir, "server", "index.js")], {
+    cwd: rootDir,
+    env: {
+      ...process.env,
+      PORT: String(port),
+      HOST: "127.0.0.1",
+      CODEX_WEBUI_DATA_DIR: dataDir,
+      CODEX_WEBUI_TERMINAL_QR: "0"
+    },
+    stdio: ["pipe", "pipe", "pipe"]
+  });
+
+  t.after(async () => {
+    if (serverProcess.exitCode === null) serverProcess.kill();
+    await removeWithRetry(dataDir);
+  });
+
+  const info = await waitForHttp(`http://127.0.0.1:${port}/api/info`);
+  assert.equal(info.authenticated, true);
+  assert.equal(info.port, port);
+
+  serverProcess.kill();
+  await new Promise((resolve) => serverProcess.once("exit", resolve));
+});
+
 test("Desktop broker preserves an already-listening external service", { timeout: 20000 }, async (t) => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "codex-webui-existing-service-test-"));
   const pipe = process.platform === "win32"
@@ -338,6 +468,15 @@ test("WebUI desktop mode uses the selected thread through the shared broker", { 
 
   socket.send(JSON.stringify({
     type: "rpc",
+    requestId: 4115,
+    method: "skills/list",
+    params: { cwds: [rootDir] }
+  }));
+  const skillsList = await browser.next((message) => message.type === "rpc-result" && message.requestId === 4115);
+  assert.equal(skillsList.result.data[0].skills[0].name, "novel-craft");
+
+  socket.send(JSON.stringify({
+    type: "rpc",
     requestId: 412,
     method: "thread/settings/update",
     params: {
@@ -401,6 +540,24 @@ test("WebUI desktop mode uses the selected thread through the shared broker", { 
   assert.equal(created.result.receivedParams.model, "gpt-test");
   assert.equal(created.result.receivedParams.permissions, ":danger-full-access");
   assert.equal(created.result.receivedParams.sandbox, undefined);
+
+  socket.send(JSON.stringify({
+    type: "rpc",
+    requestId: 414,
+    method: "thread/fork",
+    params: {
+      threadId: "thread-selected-on-phone",
+      model: "gpt-test",
+      effort: "low",
+      approvalPolicy: "never",
+      sandbox: "read-only"
+    }
+  }));
+  const forked = await browser.next((message) => message.type === "rpc-result" && message.requestId === 414);
+  assert.equal(forked.result.thread.id, "thread-selected-on-phone-forked");
+  assert.equal(forked.result.receivedParams.model, undefined);
+  assert.equal(forked.result.receivedParams.sandbox, undefined);
+  assert.equal(forked.result.receivedParams.threadId, "thread-selected-on-phone");
 
   socket.send(JSON.stringify({
     type: "rpc",

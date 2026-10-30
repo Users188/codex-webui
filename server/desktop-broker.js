@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { timingSafeEqual } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, statSync, unlinkSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readlinkSync, statSync, unlinkSync } from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -14,7 +14,7 @@ const projectRoot = path.resolve(brokerDir, "..");
 const desktopArgs = process.argv.slice(2);
 const realCodex = resolveRealCodex();
 
-if (!isPrimaryAppServerInvocation(desktopArgs)) {
+function runPassthrough() {
   const child = spawn(realCodex.command, [...realCodex.prefixArgs, ...desktopArgs], {
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
@@ -25,6 +25,26 @@ if (!isPrimaryAppServerInvocation(desktopArgs)) {
   child.stderr.pipe(process.stderr);
   child.on("error", failFatal);
   child.on("exit", (code, signal) => process.exitCode = code ?? signalExitCode(signal));
+}
+
+function isPipeListening(pipePath, timeoutMs = 200) {
+  return new Promise((resolve) => {
+    const socket = net.createConnection(pipePath);
+    let finished = false;
+    const finish = (value) => {
+      if (finished) return;
+      finished = true;
+      socket.destroy();
+      resolve(value);
+    };
+    socket.once("connect", () => finish(true));
+    socket.once("error", () => finish(false));
+    socket.setTimeout(timeoutMs, () => finish(false));
+  });
+}
+
+if (!isPrimaryAppServerInvocation(desktopArgs) || (await isPipeListening(desktopBridgePipePath()))) {
+  runPassthrough();
 } else {
   await runBroker();
 }
@@ -43,7 +63,11 @@ async function runBroker() {
   const pending = new Map();
   const serverRequests = new Set();
   let managedWebUi = null;
-  let lifecycleStartPromise = null;
+  let managedWebUiStarted = false;
+  let restartTimer = null;
+  const crashTimestamps = [];
+  const MAX_CRASH_WINDOW_MS = 30000;
+  const MAX_CRASH_COUNT = 3;
   let markPipeReady;
   const pipeReady = new Promise((resolve) => markPipeReady = resolve);
   let nextInternalId = 1;
@@ -168,14 +192,65 @@ async function runBroker() {
     for (const socket of clients) sendSocket(socket, message);
   }
 
-  function startManagedWebUiOnce() {
-    if (lifecycleStartPromise) return lifecycleStartPromise;
-    lifecycleStartPromise = startManagedWebUi().then((startedWebUi) => {
-      if (closing && startedWebUi && !startedWebUi.killed) startedWebUi.kill("SIGTERM");
-      else managedWebUi = startedWebUi;
-      return startedWebUi;
+  function attachManagedWebUi(webUi) {
+    managedWebUi = webUi;
+    webUi.on("error", (error) => {
+      process.stderr.write(`[codex-webui-bridge] Managed WebUI error: ${error.message}\n`);
     });
-    return lifecycleStartPromise;
+    webUi.on("exit", (code, signal) => {
+      process.stderr.write(`[codex-webui-bridge] Managed WebUI exited (${code ?? signal ?? "unknown"}).\n`);
+      if (managedWebUi === webUi) {
+        managedWebUi = null;
+      }
+      if (closing) return;
+
+      const now = Date.now();
+      crashTimestamps.push(now);
+      while (crashTimestamps.length > 0 && now - crashTimestamps[0] > MAX_CRASH_WINDOW_MS) {
+        crashTimestamps.shift();
+      }
+
+      if (crashTimestamps.length > MAX_CRASH_COUNT) {
+        process.stderr.write(
+          `[codex-webui-bridge] Managed WebUI exited ${crashTimestamps.length} times within ${MAX_CRASH_WINDOW_MS / 1000}s. Circuit breaker tripped; auto-restart paused.\n`
+        );
+        return;
+      }
+
+      const backoffMs = Math.min(1000 * Math.pow(2, crashTimestamps.length - 1), 5000);
+      process.stderr.write(`[codex-webui-bridge] Scheduling Managed WebUI restart in ${backoffMs}ms...\n`);
+      clearTimeout(restartTimer);
+      restartTimer = setTimeout(async () => {
+        if (closing) return;
+        try {
+          const restarted = await startManagedWebUi();
+          if (restarted) {
+            if (closing) {
+              restarted.kill("SIGTERM");
+            } else {
+              attachManagedWebUi(restarted);
+            }
+          }
+        } catch (error) {
+          process.stderr.write(`[codex-webui-bridge] Failed to restart WebUI: ${error.message}\n`);
+        }
+      }, backoffMs);
+    });
+  }
+
+  function startManagedWebUiOnce() {
+    if (managedWebUiStarted) return;
+    managedWebUiStarted = true;
+    startManagedWebUi().then((startedWebUi) => {
+      if (!startedWebUi) return;
+      if (closing) {
+        startedWebUi.kill("SIGTERM");
+      } else {
+        attachManagedWebUi(startedWebUi);
+      }
+    }).catch((error) => {
+      process.stderr.write(`[codex-webui-bridge] WebUI lifecycle startup failed: ${error.message}\n`);
+    });
   }
 
   const desktopInput = bomStrippedStdin();
@@ -202,6 +277,8 @@ async function runBroker() {
   const closeBroker = (code, signal) => {
     if (closing) return;
     closing = true;
+    clearTimeout(restartTimer);
+    restartTimer = null;
     if (managedWebUi && !managedWebUi.killed) managedWebUi.kill("SIGTERM");
     broadcast({ type: "bridge-error", error: `Codex app-server exited (${code ?? signal ?? "unknown"})` });
     for (const socket of clients) socket.destroy();
@@ -220,7 +297,17 @@ async function runBroker() {
     });
   }
   desktopInput.on("end", () => child.stdin.end());
-  await new Promise((resolve, reject) => server.listen(pipePath, resolve).once("error", reject));
+  try {
+    await new Promise((resolve, reject) => server.listen(pipePath, resolve).once("error", reject));
+  } catch (error) {
+    if (error?.code === "EADDRINUSE") {
+      server.close();
+      if (!child.killed) child.kill();
+      runPassthrough();
+      return;
+    }
+    throw error;
+  }
   markPipeReady();
 }
 
@@ -258,12 +345,6 @@ async function startManagedWebUi() {
     closeSync(outputFd);
     closeSync(errorFd);
   }
-  webUi.on("error", (error) => {
-    process.stderr.write(`[codex-webui-bridge] Failed to start WebUI: ${error.message}\n`);
-  });
-  webUi.on("exit", (code, signal) => {
-    process.stderr.write(`[codex-webui-bridge] Managed WebUI exited (${code ?? signal ?? "unknown"}).\n`);
-  });
   process.stderr.write(`[codex-webui-bridge] Started Desktop-managed WebUI on port ${port} (PID ${webUi.pid}).\n`);
   return webUi;
 }
@@ -308,9 +389,43 @@ function isPrimaryAppServerInvocation(args) {
   const index = args.indexOf("app-server");
   return index >= 0
     && args.includes("--analytics-default-enabled")
+    // `--print-startup-config` is a one-shot probe: the core writes a single JSON
+    // line to stdout and exits. It must stay transparent (passthrough), otherwise
+    // the broker keeps the pipe open and Codex Desktop reports a protocol error
+    // on its startup policy gate.
+    && !args.includes("--print-startup-config")
     && !args.includes("--listen")
     && args[index + 1] !== "daemon"
     && args[index + 1] !== "proxy";
+}
+
+// The MSIX app-execution-alias directory is recreated on every Codex update and
+// its entries are symlinks into the live package, so resolving one of them keeps
+// this bridge pinned to the installed desktop build without enumerating
+// C:\Program Files\WindowsApps (EPERM for non-admin users).
+function resolvePackagedAppCore(localAppData) {
+  const bases = [];
+  if (localAppData) bases.push(localAppData);
+  const profile = process.env.USERPROFILE || os.homedir();
+  if (profile) bases.push(path.join(profile, "AppData", "Local"));
+  for (const base of bases) {
+    const aliasPath = path.join(
+      base,
+      "Microsoft",
+      "WindowsApps",
+      "OpenAI.Codex_2p2nqsd0c76g0",
+      "codex-core-command-runner.exe"
+    );
+    try {
+      const target = readlinkSync(aliasPath);
+      const resourcesDir = path.dirname(path.resolve(path.dirname(aliasPath), target));
+      const candidate = path.join(resourcesDir, "codex.exe");
+      if (existsSync(candidate)) return candidate;
+    } catch {
+      // Alias missing or not a symlink on this install: try the next base.
+    }
+  }
+  return null;
 }
 
 function resolveRealCodex() {
@@ -319,6 +434,13 @@ function resolveRealCodex() {
   if (explicit) return { command: explicit, prefixArgs };
   if (process.platform === "win32") {
     const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
+    // Codex Desktop refuses an app-server whose build differs from its own, so
+    // prefer the core shipped with the live package over a standalone CLI copy
+    // in %LOCALAPPDATA%\OpenAI\Codex\bin (those lag behind app updates).
+    // NOTE: never trust CODEX_APP_RUNTIME_CLI_PATH here — when this bridge is the
+    // override, the desktop sets it to the bridge itself and following it forks.
+    const packaged = resolvePackagedAppCore(localAppData);
+    if (packaged) return { command: packaged, prefixArgs };
     const root = path.join(localAppData, "OpenAI", "Codex", "bin");
     try {
       const command = readdirSync(root, { withFileTypes: true })

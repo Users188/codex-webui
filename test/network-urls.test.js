@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { getLanUrls, getPrimaryLanUrl } from "../server/network-urls.js";
+import { getLanUrls, getPrimaryLanUrl, isTailscaleAddress } from "../server/network-urls.js";
 
 test("prefers a private LAN address and skips tunnel benchmark addresses", () => {
   const interfaces = {
@@ -31,4 +31,19 @@ test("skips internal and link-local addresses and falls back to localhost", () =
   };
 
   assert.deepEqual(getLanUrls(9526, interfaces), ["http://localhost:9526"]);
+});
+
+test("identifies Tailscale CGNAT IPv4 and IPv6 addresses", () => {
+  assert.equal(isTailscaleAddress("100.64.0.1"), true);
+  assert.equal(isTailscaleAddress("100.96.184.69"), true);
+  assert.equal(isTailscaleAddress("100.127.255.254"), true);
+  assert.equal(isTailscaleAddress("::ffff:100.96.184.69"), true);
+  assert.equal(isTailscaleAddress("fd7a:115c:a1e0:ab12::1"), true);
+
+  assert.equal(isTailscaleAddress("100.63.255.255"), false);
+  assert.equal(isTailscaleAddress("100.128.0.1"), false);
+  assert.equal(isTailscaleAddress("192.168.124.1"), false);
+  assert.equal(isTailscaleAddress("127.0.0.1"), false);
+  assert.equal(isTailscaleAddress(""), false);
+  assert.equal(isTailscaleAddress(null), false);
 });
