@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import readline from "node:readline";
 import { createHash, randomBytes } from "node:crypto";
-import { createReadStream, existsSync, mkdirSync, statSync } from "node:fs";
+import { createReadStream, existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import os from "node:os";
@@ -9,7 +9,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import QRCode from "qrcode";
 import { WebSocketServer } from "ws";
-import { readTokenStore, resolveDataDir, tokenStorePath } from "./token-store.js";
+import {
+  allAllowedMethods,
+  isRpcMethodAllowedForRole,
+  normalizeTokenRole,
+  readTokenStore,
+  resolveDataDir,
+  tokenStorePath
+} from "./token-store.js";
 import { UsageTracker } from "./usage-store.js";
 import { getLanUrls, isTailscaleAddress } from "./network-urls.js";
 import { DesktopBridgeConnection } from "./desktop-bridge-client.js";
@@ -50,35 +57,48 @@ const webuiCapabilities = {
   workspaceBrowser: true
 };
 
-const allowedMethods = new Set([
-  "account/read",
-  "account/login/start",
-  "account/logout",
-  "account/rateLimits/read",
-  "config/read",
-  "configRequirements/read",
-  "model/list",
-  "permissionProfile/list",
-  "skills/list",
-  "skills/config/write",
-  "thread/list",
-  "thread/start",
-  "thread/resume",
-  "thread/fork",
-  "thread/read",
-  "thread/turns/list",
-  "thread/name/set",
-  "thread/archive",
-  "thread/unarchive",
-  "thread/loaded/list",
-  "thread/settings/update",
-  "thread/queue/add",
-  "thread/queue/list",
-  "thread/queue/start",
-  "turn/start",
-  "turn/steer",
-  "turn/interrupt"
+const allowedMethods = allAllowedMethods;
+
+const scopedFsMethods = new Set([
+  "fs/readDirectory",
+  "fs/readFile",
+  "fs/getMetadata",
+  "fuzzyFileSearch",
+  "gitDiffToRemote"
 ]);
+
+function validateScopedPathAccess(method, params, scope = defaultTokenScope) {
+  if (!scopedFsMethods.has(method)) return;
+  if (!hasThreadFilter(scope)) return;
+
+  const candidatePaths = [];
+  if (params?.path && typeof params.path === "string") candidatePaths.push(params.path);
+  if (params?.cwd && typeof params.cwd === "string") candidatePaths.push(params.cwd);
+  if (params?.root && typeof params.root === "string") candidatePaths.push(params.root);
+
+  if (candidatePaths.length === 0) {
+    throw new Error("This token can only access sessions in the allowed folder.");
+  }
+
+  for (const candidate of candidatePaths) {
+    if (!isPathAllowedInScope(scope, candidate)) {
+      throw new Error("This token can only access sessions in the allowed folder.");
+    }
+    const resolved = normalizeLocalPath(candidate);
+    if (existsSync(resolved)) {
+      try {
+        const real = realpathSync(resolved);
+        if (!isPathAllowedInScope(scope, real)) {
+          throw new Error("This token can only access sessions in the allowed folder.");
+        }
+      } catch (error) {
+        if (error.message === "This token can only access sessions in the allowed folder.") {
+          throw error;
+        }
+      }
+    }
+  }
+}
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -236,6 +256,10 @@ class DesktopCodexBridge {
 
   async request(method, params = {}, scope = defaultTokenScope) {
     if (!allowedMethods.has(method)) throw new Error(`Method not allowed: ${method}`);
+    const role = scope?.role || "readonly";
+    if (!isRpcMethodAllowedForRole(method, role)) {
+      throw new Error(`Role ${scope?.role} is not allowed to call: ${method}`);
+    }
     return this.requestRaw(
       method,
       sanitizeDesktopBridgeParams(method, normalizeParams(method, params, scope))
@@ -268,6 +292,7 @@ class DesktopCodexBridge {
       threadFilterCwd: scope.threadFilterCwd,
       threadFilterCwds: scope.threadFilterCwds,
       tokenHash: scope.tokenHash,
+      role: scope.role,
       bridgeMode: "desktop",
       capabilities: webuiCapabilities,
       desktopBridgeConnected: true,
@@ -292,6 +317,7 @@ class DesktopCodexBridge {
 
 function normalizeParams(method, params, scope = defaultTokenScope) {
   const next = { ...(params || {}) };
+  validateScopedPathAccess(method, next, scope);
 
   if (method === "thread/start") {
     next.cwd = next.cwd || scope.defaultCwd;
@@ -443,6 +469,10 @@ const server = createServer(async (req, res) => {
         sendJsonStatus(res, 401, { error: "Unauthorized" });
         return;
       }
+      if ((scope?.role || "readonly") === "readonly") {
+        sendJsonStatus(res, 403, { error: "Readonly token is not allowed to perform write operations." });
+        return;
+      }
       recordHttpUsage(scope, req);
       const match = url.pathname.match(/^\/api\/threads\/([^/]+)\/pin$/);
       const threadId = match ? match[1] : null;
@@ -458,6 +488,10 @@ const server = createServer(async (req, res) => {
         sendJsonStatus(res, 401, { error: "Unauthorized" });
         return;
       }
+      if ((scope?.role || "readonly") === "readonly") {
+        sendJsonStatus(res, 403, { error: "Readonly token is not allowed to perform write operations." });
+        return;
+      }
       recordHttpUsage(scope, req);
       const match = url.pathname.match(/^\/api\/projects\/([^/]+)\/pin$/);
       const projectId = match ? match[1] : null;
@@ -471,6 +505,10 @@ const server = createServer(async (req, res) => {
       const scope = await resolveRequestScope(req, url);
       if (!scope) {
         sendJsonStatus(res, 401, { error: "Unauthorized" });
+        return;
+      }
+      if ((scope?.role || "readonly") === "readonly") {
+        sendJsonStatus(res, 403, { error: "Readonly token is not allowed to perform write operations." });
         return;
       }
       recordHttpUsage(scope, req);
@@ -575,6 +613,10 @@ const server = createServer(async (req, res) => {
       if (!scope) {
         res.writeHead(401, { "content-type": "application/json; charset=utf-8" });
         res.end(JSON.stringify({ error: "Unauthorized" }));
+        return;
+      }
+      if ((scope?.role || "readonly") === "readonly") {
+        sendJsonStatus(res, 403, { error: "Readonly token is not allowed to perform write operations." });
         return;
       }
       recordHttpUsage(scope, req);
@@ -687,6 +729,11 @@ wss.on("connection", (ws) => {
           })
         : activeScope;
       if (message.type === "rpc") {
+        if (!allowedMethods.has(message.method)) throw new Error(`Method not allowed: ${message.method}`);
+        const role = ws.tokenScope?.role || "readonly";
+        if (!isRpcMethodAllowedForRole(message.method, role)) {
+          throw new Error(`Role ${ws.tokenScope?.role} is not allowed to call: ${message.method}`);
+        }
         if (message.method === "thread/pin") {
           const { threadId, pinned } = message.params || {};
           const ok = desktopStateManager.setThreadPinned(threadId, Boolean(pinned));
@@ -717,6 +764,9 @@ wss.on("connection", (ws) => {
         recordRpcUsage(ws.tokenScope, message, bytesIn, response, false);
         ws.sendJson(response);
       } else if (message.type === "server-response") {
+        if ((ws.tokenScope?.role || "readonly") === "readonly") {
+          throw new Error("Readonly token cannot respond to server requests.");
+        }
         if (!bridge.canRespond(message.id, ws.tokenScope)) {
           throw new Error("This token cannot respond to that request.");
         }
@@ -978,6 +1028,7 @@ function parseTokenScopeEntries(rawScopes) {
         id: String(entry?.id || ""),
         label: String(entry?.label || ""),
         token: String(entry?.token || ""),
+        role: entry?.role,
         threadFilterCwds: scopePathListFromEntry(entry)
       }));
     }
@@ -986,6 +1037,7 @@ function parseTokenScopeEntries(rawScopes) {
         id: String(parsed.id || ""),
         label: String(parsed.label || ""),
         token: String(parsed.token || ""),
+        role: parsed?.role,
         threadFilterCwds: scopePathListFromEntry(parsed)
       }];
     }
@@ -1017,6 +1069,7 @@ function addTokenScope(scopes, token, threadFilterCwds, metadata = {}) {
     label: String(metadata.label || metadata.id || `Token ${scopes.size + 1}`),
     token: normalizedToken,
     tokenHash: createHash("sha256").update(normalizedToken).digest("hex"),
+    role: normalizeTokenRole(metadata.role, { hasFilter: normalizedFilters.length > 0 }),
     threadFilterCwd: primaryFilter,
     threadFilterCwds: normalizedFilters,
     defaultCwd: primaryFilter || DEFAULT_CWD,
@@ -1264,6 +1317,7 @@ function rememberVisibleThreadFromResult(method, result, scope = defaultTokenSco
 
 async function ensureThreadAccess(method, params, scope = defaultTokenScope) {
   if (!hasThreadFilter(scope) || method === "thread/list" || method === "thread/start") return;
+  validateScopedPathAccess(method, params, scope);
   const threadId = threadIdFromParams(params);
   if (!threadId) return;
   if (scope.visibleThreadIds.has(threadId)) return;

@@ -5,6 +5,89 @@ import path from "node:path";
 
 export const TOKEN_STORE_VERSION = 1;
 
+export const TOKEN_ROLES = new Set(["owner", "standard", "readonly"]);
+
+export function normalizeTokenRole(role, { hasFilter = false } = {}) {
+  if (role === undefined || role === null) return hasFilter ? "standard" : "owner";
+  const candidate = String(role).trim().toLowerCase();
+  if (!candidate) return hasFilter ? "standard" : "owner";
+  if (TOKEN_ROLES.has(candidate)) return candidate;
+  return "readonly";
+}
+
+export const readonlyMethods = new Set([
+  "account/read",
+  "account/rateLimits/read",
+  "config/read",
+  "configRequirements/read",
+  "model/list",
+  "permissionProfile/list",
+  "skills/list",
+  "thread/list",
+  "thread/read",
+  "thread/turns/list",
+  "thread/items/list",
+  "thread/loaded/list",
+  "thread/goal/get"
+]);
+
+export const standardMethods = new Set([
+  ...readonlyMethods,
+  "account/login/start",
+  "account/logout",
+  "thread/start",
+  "thread/resume",
+  "thread/fork",
+  "thread/archive",
+  "thread/unarchive",
+  "thread/revert",
+  "thread/rollback",
+  "thread/compact/start",
+  "thread/name/set",
+  "thread/settings/update",
+  "thread/queue/add",
+  "thread/queue/list",
+  "thread/queue/start",
+  "thread/goal/set",
+  "thread/goal/clear",
+  "thread/pin",
+  "project/pin",
+  "turn/start",
+  "turn/steer",
+  "turn/interrupt",
+  "review/start",
+  "gitDiffToRemote",
+  "fuzzyFileSearch",
+  "fs/readDirectory",
+  "fs/readFile",
+  "fs/getMetadata"
+]);
+
+export const ownerMethods = new Set([
+  ...standardMethods,
+  "thread/delete",
+  "command/exec",
+  "command/exec/write",
+  "command/exec/resize",
+  "command/exec/terminate",
+  "skills/config/write",
+  "mcpServerStatus/list",
+  "config/mcpServer/reload",
+  "mcpServer/oauth/login",
+  "plugin/list",
+  "plugin/installed"
+]);
+
+export const allAllowedMethods = new Set(ownerMethods);
+
+export function isRpcMethodAllowedForRole(method, role = "readonly") {
+  const normalizedRole = normalizeTokenRole(role);
+  if (normalizedRole === "readonly") return readonlyMethods.has(method);
+  if (normalizedRole === "standard") return standardMethods.has(method);
+  if (normalizedRole === "owner") return ownerMethods.has(method);
+  return readonlyMethods.has(method);
+}
+
 export function resolveDataDir(env = process.env, platform = process.platform) {
   const explicit = String(env.CODEX_WEBUI_DATA_DIR || "").trim();
   if (explicit) return path.resolve(explicit);
@@ -34,15 +117,17 @@ export function tokenFingerprint(token) {
   return hashToken(token).slice(0, 12);
 }
 
-export function createTokenRecord({ id, label, token, threadFilterCwds = [] } = {}) {
+export function createTokenRecord({ id, label, token, threadFilterCwds = [], role } = {}) {
   const accessToken = String(token || generateAccessToken()).trim();
   if (!accessToken) throw new Error("Token cannot be empty.");
   const createdAt = new Date().toISOString();
+  const normalizedFilters = normalizeScopePaths(threadFilterCwds);
   return {
     id: normalizeTokenId(id || label || "default"),
     label: String(label || id || "Default access").trim(),
     token: accessToken,
-    threadFilterCwds: normalizeScopePaths(threadFilterCwds),
+    role: normalizeTokenRole(role, { hasFilter: normalizedFilters.length > 0 }),
+    threadFilterCwds: normalizedFilters,
     createdAt,
     updatedAt: createdAt,
     disabled: false
@@ -115,6 +200,7 @@ export function validateTokenStore(store) {
     token.label = String(token.label || token.id);
     token.token = String(token.token || "").trim();
     token.threadFilterCwds = normalizeScopePaths(token.threadFilterCwds || token.threadFilterCwd || []);
+    token.role = normalizeTokenRole(token.role, { hasFilter: token.threadFilterCwds.length > 0 });
     token.disabled = Boolean(token.disabled);
     if (!token.token) throw new Error(`Token ${token.id} has no secret value.`);
     if (ids.has(token.id)) throw new Error(`Duplicate token id: ${token.id}`);
@@ -129,6 +215,7 @@ export function publicTokenRecord(record) {
   return {
     id: record.id,
     label: record.label,
+    role: normalizeTokenRole(record.role, { hasFilter: (record.threadFilterCwds || []).length > 0 }),
     fingerprint: tokenFingerprint(record.token),
     threadFilterCwds: [...(record.threadFilterCwds || [])],
     createdAt: record.createdAt,

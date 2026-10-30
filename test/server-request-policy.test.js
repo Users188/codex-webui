@@ -6,7 +6,9 @@ test("WebUI exposes only server requests it can answer correctly", () => {
   for (const method of [
     "item/commandExecution/requestApproval",
     "item/fileChange/requestApproval",
+    "item/permissions/requestApproval",
     "item/tool/requestUserInput",
+    "mcpServer/elicitation/request",
     "execCommandApproval",
     "applyPatchApproval"
   ]) {
@@ -19,9 +21,7 @@ test("Desktop-only requests never become false mobile approvals", () => {
     "attestation/generate",
     "account/chatgptAuthTokens/refresh",
     "currentTime/read",
-    "item/tool/call",
-    "item/permissions/requestApproval",
-    "mcpServer/elicitation/request"
+    "item/tool/call"
   ]) {
     assert.equal(isWebUserServerRequest(method), false, method);
   }

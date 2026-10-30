@@ -1,4 +1,11 @@
 import { currentLocale, initI18n, t } from "./i18n.js";
+import {
+  extractProposedPlan,
+  normalizePlanSteps,
+  buildApprovalDecisions,
+  collectQuestionAnswers,
+  formatTokenUsageSummary
+} from "./plan-mode.js";
 import { authenticatedUrl, authenticationAccepted, webSocketUrl } from "./access-auth.js";
 import { isWebUserApproval } from "./approval-policy.js";
 import {
@@ -79,6 +86,12 @@ const BACKGROUND_CACHE_NOTIFICATION_METHODS = new Set([
 
 const state = {
   ws: null,
+  collaborationMode: "default",
+  serviceTier: "",
+  showArchivedThreads: false,
+  tokenUsage: null,
+  tokenRole: "",
+  activePlan: null,
   token: null,
   authMode: "",
   nextRequestId: 1,
@@ -226,6 +239,15 @@ const els = {
   imageViewerClose: document.querySelector("#imageViewerClose"),
   themeSelect: document.querySelector("#themeSelect"),
   trafficSummary: document.querySelector("#trafficSummary"),
+  collaborationModeSelect: document.querySelector("#collaborationModeSelect"),
+  serviceTierSelect: document.querySelector("#serviceTierSelect"),
+  planModeToggle: document.querySelector("#planModeToggle"),
+  planPanel: document.querySelector("#planPanel"),
+  tokenUsageBadge: document.querySelector("#tokenUsageBadge"),
+  compactThreadBtn: document.querySelector("#compactThreadBtn"),
+  archiveThreadBtn: document.querySelector("#archiveThreadBtn"),
+  deleteThreadBtn: document.querySelector("#deleteThreadBtn"),
+  toggleArchivedThreads: document.querySelector("#toggleArchivedThreads"),
   authPanel: document.querySelector("#authPanel"),
   authText: document.querySelector("#authText"),
   deviceLogin: document.querySelector("#deviceLogin"),
@@ -486,6 +508,69 @@ function bindUi() {
       return;
     }
     await persistSelectedThreadSettings();
+  });
+  els.collaborationModeSelect?.addEventListener("change", async () => {
+    state.collaborationMode = els.collaborationModeSelect.value;
+    els.planModeToggle?.classList.toggle("active", state.collaborationMode === "plan");
+    await persistSelectedThreadSettings();
+  });
+  els.serviceTierSelect?.addEventListener("change", async () => {
+    state.serviceTier = els.serviceTierSelect.value;
+    await persistSelectedThreadSettings();
+  });
+  els.planModeToggle?.addEventListener("click", async () => {
+    state.collaborationMode = state.collaborationMode === "plan" ? "default" : "plan";
+    if (els.collaborationModeSelect) els.collaborationModeSelect.value = state.collaborationMode;
+    els.planModeToggle.classList.toggle("active", state.collaborationMode === "plan");
+    await persistSelectedThreadSettings();
+  });
+  els.toggleArchivedThreads?.addEventListener("click", () => {
+    state.showArchivedThreads = !state.showArchivedThreads;
+    els.toggleArchivedThreads.classList.toggle("active", state.showArchivedThreads);
+    loadThreads();
+  });
+  els.archiveThreadBtn?.addEventListener("click", async () => {
+    if (!state.currentThread?.id) return;
+    const threadId = state.currentThread.id;
+    const isArchived = Boolean(state.currentThread.archived);
+    try {
+      if (isArchived) {
+        await rpc("thread/unarchive", { threadId });
+        state.currentThread.archived = false;
+        showToast({ kind: "completed", title: t("thread.unarchive") });
+      } else {
+        await rpc("thread/archive", { threadId });
+        state.currentThread.archived = true;
+        showToast({ kind: "completed", title: t("thread.archive") });
+      }
+      updateThreadHeader();
+      await loadThreads();
+    } catch (err) {
+      showToast({ kind: "failed", title: err.message || t("common.failed") });
+    }
+  });
+  els.compactThreadBtn?.addEventListener("click", async () => {
+    if (!state.currentThread?.id) return;
+    try {
+      await rpc("thread/compact/start", { threadId: state.currentThread.id });
+      showToast({ kind: "completed", title: t("thread.compact") });
+    } catch (err) {
+      showToast({ kind: "failed", title: err.message || t("common.failed") });
+    }
+  });
+  els.deleteThreadBtn?.addEventListener("click", async () => {
+    if (!state.currentThread?.id) return;
+    if (!window.confirm(t("thread.deleteConfirm"))) return;
+    const threadId = state.currentThread.id;
+    try {
+      await rpc("thread/delete", { threadId });
+      showToast({ kind: "completed", title: t("thread.delete") });
+      state.currentThread = null;
+      updateThreadHeader();
+      await loadThreads();
+    } catch (err) {
+      showToast({ kind: "failed", title: err.message || t("common.failed") });
+    }
   });
   els.browseWorkspace.addEventListener("click", openWorkspacePicker);
   els.workspacePickerBackdrop.addEventListener("click", closeWorkspacePicker);
@@ -1779,7 +1864,7 @@ async function loadThreads() {
   try {
     const result = await rpc("thread/list", {
       limit: 100,
-      archived: false,
+      archived: Boolean(state.showArchivedThreads),
       sortKey: "recency_at",
       sortDirection: "desc"
     });
@@ -2644,10 +2729,25 @@ async function createThreadOnServer() {
     model: els.modelSelect.value,
     effort: els.reasoningSelect.value,
     permissionMode: els.permissionSelect.value,
-    modes: state.permissionModes
+    modes: state.permissionModes,
+    serviceTier: els.serviceTierSelect ? els.serviceTierSelect.value : state.serviceTier
   });
   const result = await rpc("thread/start", params);
   state.currentThread = result.thread;
+  if (state.collaborationMode === "plan" && state.currentThread?.id) {
+    try {
+      const updateParams = buildThreadSettingsUpdate({
+        threadId: state.currentThread.id,
+        model: els.modelSelect.value,
+        effort: els.reasoningSelect.value,
+        permissionMode: els.permissionSelect.value,
+        modes: state.permissionModes,
+        collaborationMode: "plan",
+        serviceTier: state.serviceTier || undefined
+      });
+      await rpc("thread/settings/update", updateParams);
+    } catch (_) {}
+  }
   const createdSettings = threadSettingsFromResume(result);
   applyThreadSettings(createdSettings);
   cacheThreadSettings(state.currentThread?.id, createdSettings);
@@ -2698,6 +2798,10 @@ async function openThread(threadOrId, { showFailure = true } = {}) {
   state.lastLoadStats = null;
   state.currentThread = previewThread || { id: threadId };
   state.currentThreadSettings = null;
+  state.activePlan = null;
+  renderPlanProgressBar(null);
+  state.tokenUsage = null;
+  renderTokenUsageBadge();
   state.threadLockConflict = false;
   updateLockBanner();
   const restoredCachedSettings = !needsResume(previewThread)
@@ -3356,6 +3460,13 @@ function applyThreadSettings(settings) {
     els.permissionSelect.append(option);
   }
   setSelectValueIfPresent(els.permissionSelect, permissionMode);
+  const collaborationMode = settings.collaborationMode || "default";
+  state.collaborationMode = collaborationMode;
+  if (els.collaborationModeSelect) els.collaborationModeSelect.value = collaborationMode;
+  if (els.planModeToggle) els.planModeToggle.classList.toggle("active", collaborationMode === "plan");
+  const serviceTier = settings.serviceTier || "";
+  state.serviceTier = serviceTier;
+  if (els.serviceTierSelect) els.serviceTierSelect.value = serviceTier;
   state.applyingThreadSettings = false;
   applyBridgeModeUi();
 }
@@ -3370,7 +3481,9 @@ async function persistSelectedThreadSettings() {
     threadId: state.currentThread.id,
     model: els.modelSelect.value,
     effort: els.reasoningSelect.value,
-    permissionMode: els.permissionSelect.value
+    permissionMode: els.permissionSelect.value,
+    collaborationMode: els.collaborationModeSelect ? els.collaborationModeSelect.value : state.collaborationMode,
+    serviceTier: els.serviceTierSelect ? els.serviceTierSelect.value : state.serviceTier
   };
   if (state.settingsSaving) return;
   await flushSelectedThreadSettings();
@@ -3777,6 +3890,8 @@ function inputToText(item) {
 
 function handleMessage(message, rawBytes = 0) {
   if (message.type === "hello") {
+    state.tokenRole = message.role || "";
+    applyTokenRoleUi();
     state.threadSettingsAvailable = Boolean(message.capabilities?.threadSettings);
     state.workspaceBrowserAvailable = Boolean(message.capabilities?.workspaceBrowser);
     setDesktopBridgeStatus(Boolean(message.desktopBridgeConnected));
@@ -3880,6 +3995,165 @@ function handleNotification(notification) {
 
   if (method === "thread/started") {
     loadThreads();
+    return;
+  }
+
+  if (method === "item/reasoning/summaryTextDelta" || method === "item/reasoning/textDelta") {
+    if (params.threadId !== state.currentThread?.id) return;
+    markRetryRecovered(params.turnId);
+    const shouldStickToBottom = shouldStickToLiveOutput();
+    let message = state.messages.find((entry) => entry.id === params.itemId);
+    if (!message) {
+      message = {
+        role: "system",
+        kind: "reasoning",
+        id: params.itemId,
+        text: "",
+        reasoningParts: [""],
+        turnId: params.turnId || ""
+      };
+      message.liveNotification = true;
+      state.messages.push(message);
+    }
+    const delta = params.delta || params.text || "";
+    message.text = (message.text || "") + delta;
+    if (!message.reasoningParts) message.reasoningParts = [""];
+    message.reasoningParts[0] = (message.reasoningParts[0] || "") + delta;
+    state.lastMessageAt = currentUnixSeconds();
+    streamingRenderBatcher.schedule({
+      threadId: params.threadId,
+      itemId: params.itemId,
+      scroll: shouldStickToBottom
+    });
+    return;
+  }
+
+  if (method === "item/commandExecution/outputDelta" || method === "item/fileChange/outputDelta") {
+    if (params.threadId !== state.currentThread?.id) return;
+    markRetryRecovered(params.turnId);
+    const shouldStickToBottom = shouldStickToLiveOutput();
+    let message = state.messages.find((entry) => entry.id === params.itemId);
+    if (!message) {
+      message = {
+        role: "tool",
+        id: params.itemId,
+        text: "",
+        turnId: params.turnId || ""
+      };
+      message.liveNotification = true;
+      state.messages.push(message);
+    }
+    const delta = params.delta || params.output || "";
+    message.text = (message.text || "") + delta;
+    state.lastMessageAt = currentUnixSeconds();
+    streamingRenderBatcher.schedule({
+      threadId: params.threadId,
+      itemId: params.itemId,
+      scroll: shouldStickToBottom
+    });
+    return;
+  }
+
+  if (method === "item/mcpToolCall/progress") {
+    if (params.threadId !== state.currentThread?.id) return;
+    const shouldStickToBottom = shouldStickToLiveOutput();
+    let message = state.messages.find((entry) => entry.id === params.itemId);
+    if (message) {
+      const progressText = params.progress != null ? " (" + Math.round(params.progress * 100) + "%)" : "";
+      const stepText = params.step || params.message || "";
+      if (progressText || stepText) {
+        message.text = message.text.split("\n[Progress:")[0] + "\n[Progress: " + stepText + progressText + "]";
+      }
+      streamingRenderBatcher.schedule({
+        threadId: params.threadId,
+        itemId: params.itemId,
+        scroll: shouldStickToBottom
+      });
+    }
+    return;
+  }
+
+  if (method === "turn/plan/updated") {
+    if (params.threadId !== state.currentThread?.id) return;
+    const normalized = normalizePlanSteps({ explanation: params.explanation, plan: params.plan });
+    state.activePlan = normalized;
+    renderPlanProgressBar(normalized);
+    return;
+  }
+
+  if (method === "item/plan/delta") {
+    if (params.threadId !== state.currentThread?.id) return;
+    markRetryRecovered(params.turnId);
+    const shouldStickToBottom = shouldStickToLiveOutput();
+    let message = state.messages.find((entry) => entry.id === params.itemId);
+    if (!message) {
+      message = {
+        role: "assistant",
+        id: params.itemId,
+        text: "",
+        turnId: params.turnId || ""
+      };
+      message.liveNotification = true;
+      state.messages.push(message);
+    }
+    message.text = (message.text || "") + (params.delta || "");
+    state.lastMessageAt = currentUnixSeconds();
+    streamingRenderBatcher.schedule({
+      threadId: params.threadId,
+      itemId: params.itemId,
+      scroll: shouldStickToBottom
+    });
+    return;
+  }
+
+  if (method === "thread/tokenUsage/updated") {
+    if (params.threadId === state.currentThread?.id) {
+      state.tokenUsage = params.usage || params.tokenUsage || params;
+      renderTokenUsageBadge();
+    }
+    return;
+  }
+
+  if (method === "thread/archived") {
+    const threadId = params.threadId || params.thread_id;
+    if (threadId && threadId === state.currentThread?.id) {
+      if (state.currentThread) state.currentThread.archived = true;
+      updateThreadHeader();
+    }
+    loadThreads();
+    return;
+  }
+
+  if (method === "thread/unarchived") {
+    const threadId = params.threadId || params.thread_id;
+    if (threadId && threadId === state.currentThread?.id) {
+      if (state.currentThread) state.currentThread.archived = false;
+      updateThreadHeader();
+    }
+    loadThreads();
+    return;
+  }
+
+  if (method === "thread/deleted") {
+    const threadId = params.threadId || params.thread_id;
+    if (threadId && threadId === state.currentThread?.id) {
+      state.currentThread = null;
+      updateThreadHeader();
+    }
+    loadThreads();
+    return;
+  }
+
+  if (method === "thread/name/updated") {
+    const threadId = params.threadId || params.thread_id;
+    const name = params.name || params.title || "";
+    if (threadId === state.currentThread?.id) {
+      if (state.currentThread) state.currentThread.name = name;
+      els.threadTitle.value = name;
+    }
+    const thread = state.threads.find((t) => t.id === threadId);
+    if (thread) thread.name = name;
+    renderThreads();
     return;
   }
 
@@ -4068,7 +4342,7 @@ function handleNotification(notification) {
 }
 
 function trackServerRequest(request, render = true) {
-  if (!request?.id || !isWebUserApproval(request?.method)) return;
+  if (!request?.id || (!isWebUserApproval(request?.method) && request?.method !== "mcpServer/elicitation/request")) return;
   const threadId = requestThreadId(request);
   if (!threadId) return;
   state.pendingRequestThreads.set(String(request.id), threadId);
@@ -4086,7 +4360,7 @@ function resolveServerRequestActivity(requestId, render = true) {
 function reconcileRequestActivities(requests) {
   const incoming = new Map();
   for (const request of requests || []) {
-    if (!request?.id || !isWebUserApproval(request?.method)) continue;
+    if (!request?.id || (!isWebUserApproval(request?.method) && request?.method !== "mcpServer/elicitation/request")) continue;
     const threadId = requestThreadId(request);
     if (threadId) incoming.set(String(request.id), threadId);
   }
@@ -4182,34 +4456,219 @@ function markRetryRecovered(turnId) {
   return true;
 }
 
+function renderTokenUsageBadge() {
+  if (!els.tokenUsageBadge) return;
+  const summary = formatTokenUsageSummary(state.tokenUsage);
+  if (summary && state.currentThread) {
+    els.tokenUsageBadge.textContent = summary;
+    els.tokenUsageBadge.classList.remove("hidden");
+  } else {
+    els.tokenUsageBadge.classList.add("hidden");
+  }
+}
+
+function renderPlanProgressBar(planData) {
+  if (!els.planPanel) return;
+  if (!planData || !planData.steps || planData.steps.length === 0) {
+    els.planPanel.classList.add("hidden");
+    els.planPanel.innerHTML = "";
+    return;
+  }
+  els.planPanel.classList.remove("hidden");
+  const pct = planData.totalCount > 0
+    ? Math.round((planData.completedCount / planData.totalCount) * 100)
+    : 0;
+
+  const stepsHtml = (planData.steps || []).map((step) => {
+    let icon = "○";
+    if (step.status === "completed") icon = "✓";
+    else if (step.status === "in_progress") icon = "●";
+    return `
+      <li class="plan-step-item ${escapeHtml(step.status)}">
+        <span class="plan-step-icon">${icon}</span>
+        <span class="plan-step-text">${escapeHtml(step.step)}</span>
+      </li>
+    `;
+  }).join("");
+
+  els.planPanel.innerHTML = `
+    <div class="plan-progress-header">
+      <span>${escapeHtml(t("plan.progress", { completed: planData.completedCount, total: planData.totalCount }))}</span>
+      <span>${pct}%</span>
+    </div>
+    <div class="plan-progress-track">
+      <div class="plan-progress-fill" style="width: ${pct}%;"></div>
+    </div>
+    ${planData.explanation ? `<p class="plan-explanation" style="font-size: 12.5px; color: var(--muted); margin-bottom: 8px;">${escapeHtml(planData.explanation)}</p>` : ""}
+    <ul class="plan-steps-list">
+      ${stepsHtml}
+    </ul>
+  `;
+}
+
+function applyTokenRoleUi() {
+  const isReadonly = state.tokenRole === "readonly";
+  if (els.deleteThreadBtn) els.deleteThreadBtn.disabled = isReadonly;
+  if (els.archiveThreadBtn) els.archiveThreadBtn.disabled = isReadonly;
+  if (els.compactThreadBtn) els.compactThreadBtn.disabled = isReadonly;
+  if (els.newThread) els.newThread.disabled = isReadonly;
+  if (els.sendButton && isReadonly) els.sendButton.disabled = true;
+  if (els.workspaceCreateForm) {
+    els.workspaceCreateForm.classList.toggle("hidden", isReadonly);
+  }
+}
+
+async function forkThreadAtTurn(turnId) {
+  const current = state.currentThread;
+  if (!current?.id || state.forkingThreadId || state.resumingThreadId) return;
+
+  const threadId = current.id;
+  state.forkingThreadId = threadId;
+  updateLockBanner();
+
+  try {
+    const result = await rpc("thread/fork", { threadId, turnId });
+    const newThread = result?.thread || result;
+    if (newThread?.id) {
+      state.threadLockConflict = false;
+      updateLockBanner();
+      await loadThreads();
+      await openThread(newThread);
+      addSystemMessage(t("thread.forkSuccess"));
+    } else {
+      throw new Error(t("thread.forkFailed"));
+    }
+  } catch (error) {
+    addSystemMessage(error.message || t("thread.forkFailed"));
+  } finally {
+    state.forkingThreadId = null;
+    updateLockBanner();
+  }
+}
+
+async function revertThreadToTurn(turnId) {
+  const current = state.currentThread;
+  if (!current?.id || !turnId) return;
+  if (!confirm(t("turn.revertConfirm"))) return;
+
+  try {
+    await rpc("thread/revert", { threadId: current.id, turnId });
+    await scheduleCurrentThreadSync(0);
+    showToast({
+      kind: "completed",
+      title: t("turn.revert")
+    });
+  } catch (error) {
+    showToast({
+      kind: "failed",
+      title: error.message || t("common.failed")
+    });
+  }
+}
+
+function renderMcpElicitationRequest(request) {
+  const wrap = document.createElement("div");
+  wrap.className = "question-request mcp-elicitation-request";
+  const params = request.params || {};
+  const serverName = params.serverName || params.server || "MCP";
+  const promptText = params.message || params.prompt || "";
+  const schema = params.requestedSchema || params.schema || {};
+  const properties = schema.properties || {};
+  const requiredKeys = new Set(Array.isArray(schema.required) ? schema.required : []);
+
+  wrap.innerHTML = `
+    <div>
+      <strong>${escapeHtml(serverName)}: ${escapeHtml(t("approval.mcpElicitation"))}</strong>
+      ${promptText ? `<p>${escapeHtml(promptText)}</p>` : ""}
+    </div>
+  `;
+
+  const form = document.createElement("form");
+  form.className = "question-form";
+
+  for (const [key, prop] of Object.entries(properties)) {
+    const label = document.createElement("label");
+    label.className = "question-field";
+    const isRequired = requiredKeys.has(key);
+    label.innerHTML = `<span>${escapeHtml(prop.title || key)}${isRequired ? " *" : ""}</span>`;
+    const input = document.createElement("input");
+    input.className = "field";
+    input.name = key;
+    input.type = prop.type === "number" || prop.type === "integer" ? "number" : "text";
+    if (isRequired) input.required = true;
+    if (prop.default !== undefined) input.value = prop.default;
+    label.append(input);
+    form.append(label);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "approval-actions";
+  actions.innerHTML = `
+    <button class="approval-button accept" type="submit">${escapeHtml(t("common.submit"))}</button>
+    <button class="approval-button decline" type="button">${escapeHtml(t("common.decline"))}</button>
+  `;
+  form.append(actions);
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const data = new FormData(form);
+    const content = {};
+    for (const [key, prop] of Object.entries(properties)) {
+      const val = data.get(key);
+      content[key] = (prop.type === "number" || prop.type === "integer")
+        ? (val === "" || val === null ? null : Number(val))
+        : val;
+    }
+    await sendServerResponse(request.id, { action: "accept", content });
+    removeApproval(request.id);
+  });
+
+  actions.querySelector("button[type='button']").addEventListener("click", async () => {
+    await sendServerResponse(request.id, { action: "decline", content: null });
+    removeApproval(request.id);
+  });
+
+  wrap.append(form);
+  return wrap;
+}
+
 function renderApprovals(requests) {
   const current = [...els.approvalPanel.querySelectorAll("[data-request-id]")]
     .map((node) => node.dataset.requestId);
 
   for (const request of requests) {
-    if (!isWebUserApproval(request?.method)) continue;
+    if (!isWebUserApproval(request?.method) && request?.method !== "mcpServer/elicitation/request") continue;
     if (!request?.id || current.includes(String(request.id))) continue;
     const card = document.createElement("div");
     card.className = "approval-card";
     card.dataset.requestId = request.id;
     if (request.method === "item/tool/requestUserInput") {
       card.append(renderQuestionRequest(request));
+    } else if (request.method === "mcpServer/elicitation/request") {
+      card.append(renderMcpElicitationRequest(request));
     } else {
+      const decisions = buildApprovalDecisions(request);
+      const buttonsHtml = decisions.map((d) => `
+        <button class="approval-button ${d.id === "decline" ? "decline" : "accept"}" data-decision-id="${escapeHtml(d.id)}">${escapeHtml(t(d.labelKey))}</button>
+      `).join("");
+
       card.innerHTML = `
         <div>
           <strong>${approvalTitle(request.method)}</strong>
           <p>${escapeHtml(approvalText(request))}</p>
         </div>
         <div class="approval-actions">
-          <button class="approval-button accept" data-decision="accept">${escapeHtml(t("common.allow"))}</button>
-          <button class="approval-button decline" data-decision="decline">${escapeHtml(t("common.decline"))}</button>
+          ${buttonsHtml}
         </div>
       `;
       card.querySelectorAll("button").forEach((button) => {
         button.addEventListener("click", async () => {
-          const decision = button.dataset.decision;
-          await respondApproval(request, decision);
-          removeApproval(request.id);
+          const decisionId = button.dataset.decisionId;
+          const found = decisions.find((d) => d.id === decisionId);
+          if (found) {
+            await respondApproval(request, found);
+            removeApproval(request.id);
+          }
         });
       });
     }
@@ -4219,9 +4678,33 @@ function renderApprovals(requests) {
   els.approvalPanel.classList.toggle("hidden", !els.approvalPanel.children.length);
 }
 
-async function respondApproval(request, decision) {
-  const result = request.method.includes("requestApproval") ? { decision } : { decision };
-  await sendServerResponse(request.id, result);
+async function respondApproval(request, decisionOrOption) {
+  if (decisionOrOption && typeof decisionOrOption === "object" && decisionOrOption.responsePayload) {
+    await sendServerResponse(request.id, decisionOrOption.responsePayload);
+    return;
+  }
+
+  if (request?.method === "item/permissions/requestApproval") {
+    if (decisionOrOption === "acceptForSession") {
+      await sendServerResponse(request.id, {
+        permissions: request.params?.permissions || {},
+        scope: "session"
+      });
+    } else if (decisionOrOption === "accept") {
+      await sendServerResponse(request.id, {
+        permissions: request.params?.permissions || {},
+        scope: "turn"
+      });
+    } else {
+      await sendServerResponse(request.id, { permissions: {} });
+    }
+    return;
+  }
+
+  const payload = (decisionOrOption && typeof decisionOrOption === "object" && "decision" in decisionOrOption)
+    ? decisionOrOption
+    : { decision: decisionOrOption };
+  await sendServerResponse(request.id, payload);
 }
 
 function renderQuestionRequest(request) {
@@ -4238,20 +4721,43 @@ function renderQuestionRequest(request) {
   const form = document.createElement("form");
   form.className = "question-form";
   for (const question of questions) {
-    const label = document.createElement("label");
+    const label = document.createElement("div");
     label.className = "question-field";
-    label.innerHTML = `<span>${escapeHtml(question.header || question.id)}</span>`;
+    label.innerHTML = `<span class="question-header">${escapeHtml(question.header || question.id)}</span>`;
     if (question.options?.length) {
-      const select = document.createElement("select");
-      select.className = "field";
-      select.name = question.id;
-      for (const option of question.options) {
-        const item = document.createElement("option");
-        item.value = option.label;
-        item.textContent = option.label;
-        select.append(item);
-      }
-      label.append(select);
+      const group = document.createElement("div");
+      group.className = "question-radio-group";
+      question.options.forEach((option, idx) => {
+        const radioCard = document.createElement("label");
+        radioCard.className = "question-radio-card";
+        radioCard.innerHTML = `
+          <input type="radio" name="${escapeHtml(question.id)}" value="${escapeHtml(option.label)}" ${idx === 0 ? "checked" : ""}>
+          <div class="question-radio-content">
+            <span class="question-radio-title">${escapeHtml(option.label)}</span>
+            ${option.description ? `<span class="question-radio-desc">${escapeHtml(option.description)}</span>` : ""}
+          </div>
+        `;
+        group.append(radioCard);
+      });
+
+      const otherCard = document.createElement("label");
+      otherCard.className = "question-radio-card question-other-card";
+      otherCard.innerHTML = `
+        <input type="radio" name="${escapeHtml(question.id)}" value="__other__">
+        <div class="question-radio-content">
+          <span class="question-radio-title">${escapeHtml(t("question.otherOption"))}</span>
+        </div>
+      `;
+      group.append(otherCard);
+
+      const otherWrap = document.createElement("div");
+      otherWrap.className = "question-other-wrap";
+      otherWrap.innerHTML = `
+        <input class="question-other-input field" name="other:${escapeHtml(question.id)}" placeholder="${escapeHtml(t("question.otherPlaceholder"))}" />
+      `;
+      group.append(otherWrap);
+
+      label.append(group);
     } else {
       const input = document.createElement("input");
       input.className = "field";
@@ -4272,12 +4778,7 @@ function renderQuestionRequest(request) {
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const data = new FormData(form);
-    const answers = {};
-    for (const question of questions) {
-      const value = String(data.get(question.id) || "").trim();
-      answers[question.id] = { answers: value ? [value] : [] };
-    }
+    const answers = collectQuestionAnswers(questions, new FormData(form));
     await sendServerResponse(request.id, { answers });
     removeApproval(request.id);
   });
@@ -4301,6 +4802,7 @@ function approvalTitle(method) {
   if (method === "item/commandExecution/requestApproval") return t("approval.command");
   if (method === "item/fileChange/requestApproval") return t("approval.fileChange");
   if (method === "item/tool/requestUserInput") return t("approval.input");
+  if (method === "mcpServer/elicitation/request") return t("approval.mcpElicitation");
   return t("approval.default");
 }
 
@@ -4568,7 +5070,7 @@ function startReplyProgress(threadId) {
 }
 
 function reconcileApprovals(requests) {
-  const supported = (requests || []).filter((request) => isWebUserApproval(request?.method));
+  const supported = (requests || []).filter((request) => isWebUserApproval(request?.method) || request?.method === "mcpServer/elicitation/request");
   const pendingIds = new Set(supported.map((request) => String(request?.id || "")));
   for (const node of els.approvalPanel.querySelectorAll("[data-request-id]")) {
     if (!pendingIds.has(String(node.dataset.requestId || ""))) node.remove();
@@ -4687,6 +5189,7 @@ function renderMessages(scroll = true) {
   const progressFooter = renderReplyProgressFooter();
   if (progressFooter) stream.append(progressFooter);
   els.messages.append(stream);
+
   const lastMessageTime = renderLastMessageTime();
   if (lastMessageTime) {
     els.messages.append(lastMessageTime);
@@ -4757,19 +5260,91 @@ function renderMessage(message) {
   item.className = `message ${message.role}${hasImages ? " has-images" : ""}${generationClass}${pendingClass}${streamingClass}`;
   if (message.id) item.dataset.messageId = String(message.id);
   const bubbleClass = message.role === "tool" ? "bubble plain" : "bubble markdown";
-  const hasText = Boolean(String(message.text || "").trim());
+
+  let rawText = message.text || "";
+  let planCardHtml = "";
+  if (message.role === "assistant") {
+    const planInfo = extractProposedPlan(rawText);
+    if (planInfo.hasPlan) {
+      rawText = planInfo.cleanedText;
+      const planMarkdownHtml = renderMarkdown(planInfo.planMarkdown);
+      planCardHtml = `
+        <div class="proposed-plan-card" data-plan-title="${escapeHtml(planInfo.title)}">
+          <div class="proposed-plan-header">
+            <div class="proposed-plan-title-wrap">
+              <span class="proposed-plan-badge">PLAN</span>
+              <span class="proposed-plan-title">${escapeHtml(planInfo.title || t("plan.cardTitle"))}</span>
+            </div>
+          </div>
+          <div class="proposed-plan-body">${planMarkdownHtml}</div>
+          <div class="proposed-plan-actions">
+            <button class="execute-plan-btn" type="button">
+              <span>▶</span> ${escapeHtml(t("plan.executeAndSwitch"))}
+            </button>
+          </div>
+        </div>
+      `;
+    }
+  }
+
+  const hasText = Boolean(String(rawText || "").trim());
   const body = message.role === "tool"
-    ? escapeHtml(message.text || "")
-    : renderMarkdown(message.text || "");
+    ? escapeHtml(rawText || "")
+    : renderMarkdown(rawText || "");
   const generation = renderImageGenerationStatus(message.imageGeneration);
   const images = renderMessageImages(message.images || []);
-  const bubble = hasText ? `<div class="${bubbleClass}">${body}</div>` : "";
+  const bubble = (hasText || !planCardHtml) ? `<div class="${bubbleClass}">${body}</div>` : "";
+
+  let turnActionsHtml = "";
+  if (message.turnId && (message.role === "user" || message.role === "assistant") && !message.pendingReply) {
+    turnActionsHtml = `
+      <div class="message-turn-actions">
+        <button class="turn-action-btn fork" type="button" data-turn-id="${escapeHtml(message.turnId)}" title="${escapeHtml(t("turn.fork"))}">
+          <span>🌿</span> ${escapeHtml(t("turn.fork"))}
+        </button>
+        <button class="turn-action-btn revert" type="button" data-turn-id="${escapeHtml(message.turnId)}" title="${escapeHtml(t("turn.revert"))}">
+          <span>⏪</span> ${escapeHtml(t("turn.revert"))}
+        </button>
+      </div>
+    `;
+  }
+
   item.innerHTML = `
     <div class="message-label">${labelFor(message.role)}</div>
     ${generation}
     ${images}
     ${bubble}
+    ${planCardHtml}
+    ${turnActionsHtml}
   `;
+
+  const executeBtn = item.querySelector(".execute-plan-btn");
+  if (executeBtn) {
+    executeBtn.addEventListener("click", async () => {
+      executeBtn.disabled = true;
+      executeBtn.textContent = t("plan.executing");
+      state.collaborationMode = "default";
+      if (els.collaborationModeSelect) els.collaborationModeSelect.value = "default";
+      if (els.planModeToggle) els.planModeToggle.classList.remove("active");
+      await persistSelectedThreadSettings();
+      await sendTurn(t("plan.executePrompt"));
+    });
+  }
+
+  const forkBtn = item.querySelector(".turn-action-btn.fork");
+  if (forkBtn) {
+    forkBtn.addEventListener("click", () => {
+      forkThreadAtTurn(message.turnId);
+    });
+  }
+
+  const revertBtn = item.querySelector(".turn-action-btn.revert");
+  if (revertBtn) {
+    revertBtn.addEventListener("click", () => {
+      revertThreadToTurn(message.turnId);
+    });
+  }
+
   bindImagePlaceholders(item);
   bindMarkdownImages(item);
   return item;
@@ -4777,6 +5352,7 @@ function renderMessage(message) {
 
 function patchStreamingMessage(message, scroll) {
   if (!message?.id || message.role !== "assistant" || message.kind) return false;
+  if (extractProposedPlan(message.text || "").hasPlan) return false;
   const item = Array.from(els.messages.querySelectorAll("[data-message-id]"))
     .find((node) => node.dataset.messageId === String(message.id));
   const bubble = item?.querySelector(".bubble.markdown");
@@ -5246,8 +5822,14 @@ function updateThreadHeader() {
   els.threadTitle.disabled = !thread;
   els.threadTitle.title = t(thread?.id || thread?.draft ? "thread.editTitle" : "thread.notSelected");
   const metaPath = thread?.cwd ? shortPath(thread.cwd) : t("empty.noProject");
-  els.threadMeta.textContent = thread ? `${metaPath} · ${formatStatusLabel(thread.status)}` : t("common.ready");
+  const archivedText = thread?.archived ? ` · [${t("thread.archivedBadge")}]` : "";
+  els.threadMeta.textContent = thread ? `${metaPath} · ${formatStatusLabel(thread.status)}${archivedText}` : t("common.ready");
+  if (els.archiveThreadBtn) {
+    els.archiveThreadBtn.title = t(thread?.archived ? "thread.unarchive" : "thread.archive");
+    els.archiveThreadBtn.classList.toggle("active", Boolean(thread?.archived));
+  }
   updateResumeStatus(thread);
+  renderTokenUsageBadge();
   updateSendMode();
   updateProjectSelectState();
   scrollThreadTitleToEnd();

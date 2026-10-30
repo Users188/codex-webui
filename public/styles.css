@@ -3363,3 +3363,392 @@ body {
     bottom: calc(100% + 6px);
   }
 }
+
+
+/* Wave 1: Plan Mode, Token Usage, Session Controls & Approvals */
+
+.archive-toggle-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.archive-toggle-btn:hover {
+  background: var(--pill);
+  color: var(--ink);
+}
+
+.archive-toggle-btn.active {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+.token-usage-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--pill);
+  color: var(--muted);
+  border: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.thread-action-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.thread-action-btn:hover {
+  background: var(--pill);
+  color: var(--ink);
+}
+
+.thread-action-btn.danger:hover {
+  background: color-mix(in srgb, var(--danger) 15%, transparent);
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 30%, transparent);
+}
+
+.composer-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px 0;
+}
+
+.plan-mode-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.plan-mode-toggle:hover {
+  background: var(--pill);
+  color: var(--ink);
+}
+
+.plan-mode-toggle.active {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  border-color: var(--accent);
+}
+
+.plan-mode-icon {
+  font-size: 13px;
+  line-height: 1;
+}
+
+/* Proposed Plan Card */
+.proposed-plan-card {
+  margin: 12px 0;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line));
+  border-radius: 12px;
+  background: var(--surface);
+  overflow: hidden;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.04);
+}
+
+.proposed-plan-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: var(--accent-soft);
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 25%, var(--line));
+}
+
+.proposed-plan-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.proposed-plan-badge {
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--accent-strong);
+  color: #ffffff;
+  text-transform: uppercase;
+}
+
+.proposed-plan-title {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--accent-strong);
+}
+
+.proposed-plan-body {
+  padding: 14px;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.proposed-plan-body > *:first-child {
+  margin-top: 0;
+}
+
+.proposed-plan-body > *:last-child {
+  margin-bottom: 0;
+}
+
+.proposed-plan-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 10px 14px;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.execute-plan-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: var(--accent);
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.execute-plan-btn:hover {
+  background: var(--accent-strong);
+}
+
+/* Plan Progress Bar & Live Steps */
+.plan-progress-panel {
+  margin: 10px 0;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.plan-progress-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.plan-progress-track {
+  height: 6px;
+  width: 100%;
+  border-radius: 999px;
+  background: var(--pill);
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+
+.plan-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 0.3s ease;
+}
+
+.plan-steps-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.plan-step-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--ink);
+}
+
+.plan-step-icon {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  margin-top: 1px;
+}
+
+.plan-step-item.completed {
+  color: var(--muted);
+}
+
+.plan-step-item.completed .plan-step-icon {
+  color: var(--accent);
+}
+
+.plan-step-item.in_progress {
+  color: var(--accent-strong);
+  font-weight: 600;
+}
+
+.plan-step-item.in_progress .plan-step-icon {
+  color: var(--accent);
+  animation: pulse 1.5s infinite;
+}
+
+.plan-step-item.pending {
+  color: var(--muted);
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.9); }
+}
+
+/* Turn Action Buttons on History Messages */
+.message-turn-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.message:hover .message-turn-actions {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .message-turn-actions {
+    opacity: 0.85;
+  }
+}
+
+.turn-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  font-size: 11px;
+  color: var(--muted);
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.turn-action-btn:hover {
+  background: var(--pill);
+  color: var(--ink);
+  border-color: color-mix(in srgb, var(--ink) 25%, var(--line));
+}
+
+.turn-action-btn.revert:hover {
+  color: var(--warn);
+}
+
+/* Question request radio cards */
+.question-radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.question-radio-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  cursor: pointer;
+  font-size: 13px;
+  transition: all 0.12s ease;
+}
+
+.question-radio-card:hover {
+  background: var(--pill);
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--line));
+}
+
+.question-radio-card input[type="radio"] {
+  margin-top: 2px;
+  cursor: pointer;
+}
+
+.question-radio-content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.question-radio-title {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.question-radio-desc {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.question-other-wrap {
+  margin-top: 6px;
+  padding-left: 24px;
+}
+
+.question-other-input {
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 12.5px;
+}
+
+.question-other-input:focus {
+  outline: 2px solid var(--focus-ring);
+  border-color: var(--accent);
+}

@@ -90,3 +90,60 @@ test("unrelated RPC parameters are not changed", () => {
   const params = { threadId: "thread-3", name: "New name" };
   assert.deepEqual(sanitizeDesktopBridgeParams("thread/name/set", params), params);
 });
+
+test("desktop bridge handles collaborationMode and serviceTier across turn/start, thread/start, thread/settings/update", () => {
+  // turn/start keeps collaborationMode (string or object) and serviceTier/serviceTierForTurn
+  assert.deepEqual(
+    sanitizeDesktopBridgeParams("turn/start", {
+      threadId: "thread-1",
+      input: [{ type: "text", text: "hello" }],
+      collaborationMode: { mode: "plan" },
+      serviceTier: "fast",
+      serviceTierForTurn: "fast",
+      model: "override-model",
+      effort: "high"
+    }),
+    {
+      threadId: "thread-1",
+      input: [{ type: "text", text: "hello" }],
+      collaborationMode: { mode: "plan" },
+      serviceTier: "fast",
+      serviceTierForTurn: "fast"
+    }
+  );
+
+  // thread/start drops collaborationMode but keeps serviceTier/serviceTierForTurn
+  assert.deepEqual(
+    sanitizeDesktopBridgeParams("thread/start", {
+      cwd: "E:\\AI\\project",
+      collaborationMode: "plan",
+      serviceTier: "fast",
+      serviceTierForTurn: "fast",
+      sandbox: "danger-full-access",
+      projectId: "proj-123"
+    }),
+    {
+      cwd: "E:\\AI\\project",
+      serviceTier: "fast",
+      serviceTierForTurn: "fast"
+    }
+  );
+
+  // thread/settings/update keeps collaborationMode object and serviceTier
+  assert.deepEqual(
+    sanitizeDesktopBridgeParams("thread/settings/update", {
+      threadId: "thread-2",
+      collaborationMode: { mode: "plan", settings: {} },
+      serviceTier: "fast",
+      serviceTierForTurn: "fast",
+      sandboxPolicy: { type: "workspaceWrite" },
+      projectId: "proj-123"
+    }),
+    {
+      threadId: "thread-2",
+      collaborationMode: { mode: "plan", settings: {} },
+      serviceTier: "fast",
+      serviceTierForTurn: "fast"
+    }
+  );
+});

@@ -4,6 +4,7 @@ import {
   availablePermissionModes,
   buildSharedThreadStart,
   buildThreadSettingsUpdate,
+  formatCollaborationModeParam,
   permissionModeFromSettings,
   threadSettingsFromNotification,
   threadSettingsFromResume
@@ -115,4 +116,48 @@ test("buildSharedThreadStart carries remote hostId and projectId", () => {
   });
   assert.equal(localResult.hostId, undefined);
   assert.equal(localResult.projectId, "proj-local-456");
+});
+
+test("thread settings and start/update handle collaborationMode and serviceTier", () => {
+  const modes = availablePermissionModes(profiles);
+  const start = buildSharedThreadStart({
+    cwd: "E:\\AI\\project",
+    model: "gpt-test",
+    effort: "high",
+    permissionMode: "full-access",
+    modes,
+    serviceTier: "fast"
+  });
+  assert.equal(start.collaborationMode, undefined);
+  assert.equal(start.serviceTier, "fast");
+
+  const update = buildThreadSettingsUpdate({
+    threadId: "thread-1",
+    model: "gpt-test",
+    effort: "medium",
+    permissionMode: "request-approval",
+    modes,
+    collaborationMode: "default",
+    serviceTier: "flex"
+  });
+  assert.deepEqual(update.collaborationMode, {
+    mode: "default",
+    settings: {
+      model: "gpt-test",
+      reasoning_effort: "medium",
+      developer_instructions: null
+    }
+  });
+  assert.equal(update.serviceTier, "flex");
+
+  const resume = threadSettingsFromResume({
+    cwd: "E:\\AI\\project",
+    model: "gpt-test",
+    serviceTier: "fast",
+    collaborationMode: { mode: "plan" },
+    activePermissionProfile: { id: ":workspace" },
+    approvalPolicy: "on-request"
+  });
+  assert.equal(resume.collaborationMode, "plan");
+  assert.equal(resume.serviceTier, "fast");
 });

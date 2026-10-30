@@ -20,9 +20,16 @@ export function sanitizeDesktopBridgeParams(method, params = {}) {
     for (const key of runtimeOverrideKeys) delete next[key];
     return next;
   }
-  if (method === "thread/start" || method === "thread/settings/update") {
+  if (method === "thread/start") {
     for (const key of rawSandboxKeys) delete next[key];
     delete next.projectId;
+    delete next.collaborationMode;
+    return next;
+  }
+  if (method === "thread/settings/update") {
+    for (const key of rawSandboxKeys) delete next[key];
+    delete next.projectId;
+    return next;
   }
   return next;
 }

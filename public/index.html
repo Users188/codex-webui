@@ -40,6 +40,9 @@
         <div class="sidebar-search">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m20.2 18.8-4.3-4.3a7 7 0 1 0-1.4 1.4l4.3 4.3 1.4-1.4ZM5 10.5a5.5 5.5 0 1 1 11 0 5.5 5.5 0 0 1-11 0Z" /></svg>
           <input id="searchThreads" aria-label="搜索" data-i18n-aria-label="thread.search" placeholder="搜索会话" data-i18n-placeholder="thread.searchPlaceholder" />
+          <button class="icon-button archive-toggle-btn" id="toggleArchivedThreads" type="button" aria-label="已归档" title="切换显示已归档会话" data-i18n-aria-label="thread.toggleArchived" data-i18n-title="thread.showArchived">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 8v13H3V8M1 3h22v5H1zM10 12h4"/></svg>
+          </button>
         </div>
 
         <div class="thread-list" id="threadList"></div>
@@ -52,6 +55,16 @@
           <div class="thread-title-wrap">
             <div class="thread-title-line">
               <input class="thread-title" id="threadTitle" placeholder="未选择会话" data-i18n-placeholder="thread.notSelected" disabled />
+              <span class="token-usage-badge hidden" id="tokenUsageBadge" title="上下文 Token 用量" data-i18n-title="usage.tokensTitle"></span>
+              <button class="icon-button thread-action-btn" id="compactThreadBtn" type="button" title="压缩上下文" data-i18n-title="thread.compact">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 14h6m0 0v6m0-6L3 21m17-7h-6m0 0v6m0-6l7 7M4 10h6m0 0V4m0 6L3 3m17 7h-6m0 0V4m0 6l7-7"/></svg>
+              </button>
+              <button class="icon-button thread-action-btn" id="archiveThreadBtn" type="button" title="归档会话" data-i18n-title="thread.archive">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 8v13H3V8M1 3h22v5H1zM10 12h4"/></svg>
+              </button>
+              <button class="icon-button thread-action-btn danger" id="deleteThreadBtn" type="button" title="删除会话" data-i18n-title="thread.delete">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18m-2 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+              </button>
               <button class="resume-status" id="resumeStatus" type="button" title="点击连接会话" data-i18n="thread.connect" data-i18n-title="thread.connectTitle">点击连接</button>
               <button class="icon-button fullscreen-toggle" id="fullscreenToggle" type="button" aria-label="切换全屏" title="切换全屏" data-i18n-aria-label="fullscreen.toggle" data-i18n-title="fullscreen.toggle">
                 <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -75,6 +88,7 @@
         </section>
 
         <section class="approval-panel hidden" id="approvalPanel"></section>
+        <section class="plan-panel hidden" id="planPanel"></section>
         <section class="messages" id="messages">
           <div class="empty-state">
             <h1 data-i18n="empty.chooseTitle">选择或创建一个会话</h1>
@@ -102,6 +116,12 @@
         </div>
 
         <form class="composer" id="composer">
+          <div class="composer-toolbar" id="composerToolbar">
+            <button class="plan-mode-toggle" id="planModeToggle" type="button" title="快捷切换 Plan 模式" data-i18n-title="plan.toggleTitle">
+              <span class="plan-mode-icon">📋</span>
+              <span class="plan-mode-label" data-i18n="plan.toggle">Plan</span>
+            </button>
+          </div>
           <div class="follow-up-menu hidden" id="followUpMenu" role="menu" aria-label="选择后续消息方式" data-i18n-aria-label="composer.chooseFollowUpTitle">
             <button class="follow-up-option" type="button" role="menuitem" data-follow-up-mode="steer">
               <strong data-i18n="composer.steerOption">立即引导</strong>
@@ -151,6 +171,21 @@
             <label>
               <span data-i18n="settings.permissionMode">权限模式</span>
               <select id="permissionSelect" class="field"></select>
+            </label>
+            <label>
+              <span data-i18n="settings.collaborationMode">协作模式</span>
+              <select id="collaborationModeSelect" class="field">
+                <option value="default" data-i18n="collaboration.default">Default</option>
+                <option value="plan" data-i18n="collaboration.plan">Plan</option>
+              </select>
+            </label>
+            <label>
+              <span data-i18n="settings.serviceTier">速度档位</span>
+              <select id="serviceTierSelect" class="field">
+                <option value="" data-i18n="serviceTier.default">标准</option>
+                <option value="fast" data-i18n="serviceTier.fast">Fast</option>
+                <option value="flex" data-i18n="serviceTier.flex">Flex</option>
+              </select>
             </label>
           </div>
         </section>

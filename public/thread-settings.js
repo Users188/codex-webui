@@ -85,13 +85,29 @@ export function permissionModeFromSettings(settings, modes = permissionModeDefin
   ))?.id || "custom";
 }
 
+export function formatCollaborationModeParam(collaborationMode, { model, effort } = {}) {
+  if (!collaborationMode) return null;
+  const modeStr = typeof collaborationMode === "object"
+    ? (collaborationMode.mode || "default")
+    : String(collaborationMode || "default");
+  return {
+    mode: modeStr,
+    settings: {
+      model: model || "",
+      reasoning_effort: effort || null,
+      developer_instructions: null
+    }
+  };
+}
+
 export function threadSettingsFromResume(result) {
   if (!result) return null;
   return normalizeThreadSettings({
     cwd: result.cwd || result.thread?.cwd,
     model: result.model,
     effort: result.reasoningEffort ?? result.effort,
-    serviceTier: result.serviceTier,
+    serviceTier: result.serviceTier ?? result.thread?.serviceTier,
+    collaborationMode: result.collaborationMode ?? result.thread?.collaborationMode,
     approvalPolicy: result.approvalPolicy,
     approvalsReviewer: result.approvalsReviewer,
     activePermissionProfile: result.activePermissionProfile,
@@ -104,21 +120,25 @@ export function threadSettingsFromNotification(params) {
   return normalizeThreadSettings(params.threadSettings);
 }
 
-export function buildThreadSettingsUpdate({ threadId, model, effort, permissionMode, modes }) {
+export function buildThreadSettingsUpdate({ threadId, model, effort, permissionMode, modes, collaborationMode, serviceTier }) {
   if (!threadId) throw new Error("threadId is required");
+  const formattedCollab = formatCollaborationModeParam(collaborationMode, { model, effort });
   return {
     threadId,
-    ...runtimeSelectionParams({ model, effort, permissionMode, modes })
+    ...runtimeSelectionParams({ model, effort, permissionMode, modes }),
+    ...(formattedCollab ? { collaborationMode: formattedCollab } : {}),
+    ...(serviceTier ? { serviceTier } : {})
   };
 }
 
-export function buildSharedThreadStart({ cwd, model, effort, permissionMode, modes, hostId, projectId }) {
+export function buildSharedThreadStart({ cwd, model, effort, permissionMode, modes, hostId, projectId, serviceTier }) {
   if (!cwd) throw new Error("cwd is required");
   return {
     cwd,
     ...(hostId && hostId !== "local" ? { hostId } : {}),
     ...(projectId ? { projectId } : {}),
-    ...runtimeSelectionParams({ model, effort, permissionMode, modes })
+    ...runtimeSelectionParams({ model, effort, permissionMode, modes }),
+    ...(serviceTier ? { serviceTier } : {})
   };
 }
 
@@ -134,12 +154,17 @@ function runtimeSelectionParams({ model, effort, permissionMode, modes }) {
   };
 }
 
-function normalizeThreadSettings(settings) {
+export function normalizeThreadSettings(settings) {
+  const rawMode = settings?.collaborationMode;
+  const collaborationMode = typeof rawMode === "object"
+    ? (rawMode?.mode || "default")
+    : (rawMode || "default");
   return {
     cwd: settings?.cwd || "",
     model: settings?.model || "",
     effort: settings?.effort ?? settings?.reasoningEffort ?? "",
     serviceTier: settings?.serviceTier ?? null,
+    collaborationMode,
     approvalPolicy: settings?.approvalPolicy || "",
     approvalsReviewer: settings?.approvalsReviewer || "user",
     activePermissionProfile: settings?.activePermissionProfile || null,
