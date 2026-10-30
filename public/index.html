@@ -73,6 +73,12 @@
                 <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="15" y1="3" x2="15" y2="21"/></svg>
                 <span class="diff-count-badge hidden" id="diffCountBadge">0</span>
               </button>
+              <button class="icon-button topbar-action-btn" id="toggleTerminalBtn" type="button" title="切换底部终端" data-i18n-title="terminal.toggleTitle">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+              </button>
+              <button class="icon-button topbar-action-btn" id="openEcosystemBtn" type="button" title="生态中心 (Skills / MCP / Plugins)" data-i18n-title="ecosystem.btnTitle">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+              </button>
               <button class="icon-button fullscreen-toggle" id="fullscreenToggle" type="button" aria-label="切换全屏" title="切换全屏" data-i18n-aria-label="fullscreen.toggle" data-i18n-title="fullscreen.toggle">
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                   <path class="fullscreen-icon-enter" d="M8 3H3v5h2V5h3V3Zm8 0v2h3v3h2V3h-5ZM5 16H3v5h5v-2H5v-3Zm14 3h-3v2h5v-5h-2v3Z" />
@@ -148,6 +154,32 @@
           <textarea id="promptInput" rows="1" placeholder="发消息给 Codex" data-i18n-placeholder="composer.placeholder"></textarea>
           <button class="send-button" id="sendButton" type="submit" data-i18n="composer.send" aria-label="发送" disabled>发送</button>
         </form>
+
+        <section class="terminal-pane hidden" id="terminalPane">
+          <div class="terminal-toolbar">
+            <div class="terminal-tabs" id="terminalTabList"></div>
+            <button class="icon-button terminal-tool-btn" id="newTerminalTabBtn" type="button" title="新建终端" data-i18n-title="terminal.new">＋</button>
+            <select class="field terminal-shell-select" id="terminalShellSelect">
+              <option value="powershell">PowerShell</option>
+              <option value="cmd">CMD</option>
+              <option value="bash">Bash</option>
+            </select>
+            <button class="secondary-action compact-action" id="clearTerminalBtn" type="button" title="清屏" data-i18n-title="terminal.clear">
+              <span data-i18n="terminal.clear">清屏</span>
+            </button>
+            <button class="secondary-action compact-action" id="terminalSigintBtn" type="button" title="中断 (Ctrl+C)" data-i18n-title="terminal.sigint">^C</button>
+            <button class="secondary-action compact-action danger" id="killTerminalBtn" type="button" title="终止进程" data-i18n-title="terminal.kill">
+              <span data-i18n="terminal.kill">终止</span>
+            </button>
+            <button class="icon-button close-terminal-btn" id="closeTerminalPaneBtn" type="button" aria-label="关闭终端" title="关闭终端" data-i18n-title="terminal.close" data-i18n-aria-label="terminal.close">×</button>
+          </div>
+          <pre class="terminal-output" id="terminalOutputViewport"></pre>
+          <form class="terminal-input-row" id="terminalInputForm">
+            <span class="terminal-prompt-symbol">$</span>
+            <input class="field terminal-input" id="terminalStdinInput" autocomplete="off" spellcheck="false" placeholder="输入命令..." data-i18n-placeholder="terminal.placeholder" />
+            <button class="primary-action compact-action" id="terminalSendBtn" type="submit" data-i18n="terminal.send">发送</button>
+          </form>
+        </section>
 
         <section class="setup-band" id="setupBand">
           <div class="setup-grid">
@@ -254,12 +286,103 @@
 
           <!-- Plan & Agents Tab Content -->
           <section class="side-tab-panel hidden" id="sidePanelAgents">
-            <div class="agents-panel-content" id="agentsPanelContent">
-              <div class="side-panel-empty" data-i18n="agents.empty">暂无活跃 Agent 或独立计划</div>
+            <div class="agents-panel-scroll">
+              <div class="agent-section-card">
+                <div class="agent-section-header">
+                  <strong data-i18n="agents.goalTitle">会话长程目标 (Goal)</strong>
+                </div>
+                <div class="goal-current-status" id="goalCurrentStatus">
+                  <span class="goal-none-text" data-i18n="agents.goalNone">尚未设定长程目标</span>
+                </div>
+                <form class="goal-form" id="goalForm">
+                  <label class="goal-field-label">
+                    <span data-i18n="agents.goalObjective">目标描述</span>
+                    <textarea class="field goal-objective-input" id="goalObjectiveInput" rows="2" placeholder="输入当前会话长程目标..."></textarea>
+                  </label>
+                  <label class="goal-field-label">
+                    <span data-i18n="agents.goalBudget">Token 预算 (可选)</span>
+                    <input class="field goal-budget-input" id="goalBudgetInput" type="number" min="0" placeholder="例如 50000" />
+                  </label>
+                  <div class="goal-actions">
+                    <button class="primary-action compact-action" id="saveGoalBtn" type="submit" data-i18n="agents.goalSave">保存目标</button>
+                    <button class="secondary-action compact-action" id="clearGoalBtn" type="button" data-i18n="agents.goalClear">清除目标</button>
+                  </div>
+                </form>
+              </div>
+
+              <div class="agent-section-card" id="sidePanelPlanCard">
+                <div class="agent-section-header">
+                  <strong data-i18n="plan.progress">计划进度</strong>
+                </div>
+                <div class="agents-panel-content" id="agentsPanelContent">
+                  <div class="side-panel-empty" data-i18n="agents.empty">暂无活跃计划</div>
+                </div>
+              </div>
+
+              <div class="agent-section-card">
+                <div class="agent-section-header">
+                  <strong data-i18n="agents.activeTitle">活跃会话与子智能体</strong>
+                  <button class="secondary-action compact-action" id="refreshAgentsBtn" type="button" data-i18n="agents.refresh">刷新</button>
+                </div>
+                <div class="active-agents-list" id="activeAgentsList">
+                  <div class="side-panel-empty" data-i18n="agents.emptyList">当前无内存活跃子智能体</div>
+                </div>
+              </div>
             </div>
           </section>
         </div>
       </aside>
+    </div>
+
+        <div class="ecosystem-modal hidden" id="ecosystemModal" role="dialog" aria-modal="true" aria-labelledby="ecosystemModalTitle">
+      <button class="ecosystem-modal-backdrop" id="ecosystemModalBackdrop" type="button" aria-label="关闭生态中心" data-i18n-aria-label="ecosystem.close"></button>
+      <section class="ecosystem-modal-panel">
+        <header class="ecosystem-modal-header">
+          <div class="ecosystem-modal-title-row">
+            <strong id="ecosystemModalTitle" data-i18n="ecosystem.title">生态管理中心</strong>
+            <nav class="ecosystem-tabs" role="tablist">
+              <button class="eco-tab-btn active" id="ecoTabSkills" type="button" role="tab" data-tab="skills" aria-selected="true">
+                <span data-i18n="ecosystem.tabSkills">Skills (技能)</span>
+              </button>
+              <button class="eco-tab-btn" id="ecoTabMcp" type="button" role="tab" data-tab="mcp" aria-selected="false">
+                <span data-i18n="ecosystem.tabMcp">MCP 服务</span>
+              </button>
+              <button class="eco-tab-btn" id="ecoTabPlugins" type="button" role="tab" data-tab="plugins" aria-selected="false">
+                <span data-i18n="ecosystem.tabPlugins">Plugins (插件)</span>
+              </button>
+            </nav>
+          </div>
+          <button class="icon-button close-eco-modal-btn" id="closeEcosystemModal" type="button" aria-label="关闭" data-i18n-aria-label="ecosystem.close">×</button>
+        </header>
+
+        <div class="ecosystem-modal-body">
+          <!-- Skills Panel -->
+          <section class="eco-tab-panel" id="ecoPanelSkills">
+            <div class="eco-panel-toolbar">
+              <input class="field eco-search-input" id="ecoSkillSearch" placeholder="搜索技能名称或描述..." data-i18n-placeholder="ecosystem.skillsSearchPlaceholder" />
+              <button class="secondary-action compact-action" id="refreshSkillsBtn" type="button" data-i18n="ecosystem.refresh">刷新</button>
+            </div>
+            <div class="eco-list" id="ecoSkillsList"></div>
+          </section>
+
+          <!-- MCP Panel -->
+          <section class="eco-tab-panel hidden" id="ecoPanelMcp">
+            <div class="eco-panel-toolbar">
+              <button class="primary-action compact-action" id="reloadMcpBtn" type="button" data-i18n="ecosystem.mcpReload">重载全部 MCP</button>
+              <button class="secondary-action compact-action" id="refreshMcpBtn" type="button" data-i18n="ecosystem.refresh">刷新</button>
+            </div>
+            <div class="eco-list" id="ecoMcpList"></div>
+          </section>
+
+          <!-- Plugins Panel -->
+          <section class="eco-tab-panel hidden" id="ecoPanelPlugins">
+            <div class="eco-panel-toolbar">
+              <button class="secondary-action compact-action" id="refreshPluginsBtn" type="button" data-i18n="ecosystem.refresh">刷新</button>
+            </div>
+            <div class="eco-list" id="ecoPluginsList"></div>
+          </section>
+        </div>
+      </section>
     </div>
 
     <div class="workspace-picker hidden" id="workspacePicker" role="dialog" aria-modal="true" aria-labelledby="workspacePickerTitle">

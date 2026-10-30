@@ -65,7 +65,8 @@ const scopedFsMethods = new Set([
   "fs/readFile",
   "fs/getMetadata",
   "fuzzyFileSearch",
-  "gitDiffToRemote"
+  "gitDiffToRemote",
+  "command/exec"
 ]);
 
 function validateScopedPathAccess(method, params, scope = defaultTokenScope) {
@@ -153,6 +154,9 @@ class DesktopCodexBridge {
       },
       onServerRequestResolved: (id) => this.resolveServerRequest(id),
       onStatus: (connected) => {
+        if (!connected) {
+          this.activeTurnsByThread.clear();
+        }
         if (connected && this.proc) {
           try { this.proc.kill(); } catch {}
           this.proc = null;
@@ -235,6 +239,14 @@ class DesktopCodexBridge {
       this.activeTurnsByThread.set(threadId, message.params?.turn?.id || "active");
     } else if (notifMethod === "turn/completed" && threadId) {
       this.activeTurnsByThread.delete(threadId);
+    } else if (notifMethod === "thread/closed" && threadId) {
+      this.activeTurnsByThread.delete(threadId);
+    } else if (notifMethod === "thread/status/changed" && threadId) {
+      const status = message?.params?.status;
+      const statusType = typeof status === "string" ? status : status?.type;
+      if (statusType === "idle" || statusType === "stopped") {
+        this.activeTurnsByThread.delete(threadId);
+      }
     }
 
     if (message?.id !== undefined && message?.method) {
@@ -343,6 +355,9 @@ class DesktopCodexBridge {
 
 function normalizeParams(method, params, scope = defaultTokenScope) {
   const next = { ...(params || {}) };
+  if (method === "command/exec") {
+    next.cwd = next.cwd || scope.defaultCwd;
+  }
   validateScopedPathAccess(method, next, scope);
 
   if (method === "thread/start") {

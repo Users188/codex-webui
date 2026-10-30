@@ -4173,3 +4173,416 @@ body {
     display: none;
   }
 }
+
+/* Wave 3: Interactive Terminal, Ecosystem Center Modal, Goal & Subagents */
+
+/* Terminal Pane */
+.terminal-pane {
+  display: flex;
+  flex-direction: column;
+  height: 260px;
+  min-height: 140px;
+  max-height: 50vh;
+  background: #121314;
+  color: #d1d5db;
+  border-top: 1px solid var(--line);
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  z-index: 10;
+  flex-shrink: 0;
+}
+
+.terminal-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  background: #1a1c1e;
+  border-bottom: 1px solid #2d3135;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+.terminal-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow-x: auto;
+  flex: 1;
+}
+
+.terminal-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  color: #9ca3af;
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.terminal-tab:hover {
+  background: #23272e;
+  color: #d1d5db;
+}
+
+.terminal-tab.active {
+  background: #282c34;
+  color: #ffffff;
+  border-color: #3e4451;
+  font-weight: 600;
+}
+
+.terminal-output {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 12px;
+  margin: 0;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: #121314;
+  color: #e5e7eb;
+}
+
+.terminal-input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: #1a1c1e;
+  border-top: 1px solid #2d3135;
+  flex-shrink: 0;
+}
+
+.terminal-prompt-symbol {
+  color: #10b981;
+  font-weight: 700;
+  font-size: 13px;
+  user-select: none;
+}
+
+.terminal-input {
+  flex: 1;
+  height: 28px;
+  background: #121314;
+  color: #ffffff;
+  border: 1px solid #374151;
+  border-radius: 4px;
+  padding: 0 8px;
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.terminal-input:focus {
+  outline: none;
+  border-color: #10b981;
+}
+
+.terminal-shell-select {
+  height: 26px;
+  padding: 0 6px;
+  font-size: 11px;
+  background: #282c34;
+  color: #d1d5db;
+  border: 1px solid #374151;
+  border-radius: 4px;
+}
+
+/* Ecosystem Modal */
+.ecosystem-modal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ecosystem-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(2px);
+  border: none;
+  cursor: pointer;
+}
+
+.ecosystem-modal-panel {
+  position: relative;
+  width: 720px;
+  max-width: calc(100vw - 32px);
+  height: 580px;
+  max-height: calc(100vh - 48px);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  z-index: 10;
+}
+
+.ecosystem-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  flex-shrink: 0;
+}
+
+.ecosystem-modal-title-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.ecosystem-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.eco-tab-btn {
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.eco-tab-btn:hover {
+  background: var(--pill);
+  color: var(--ink);
+}
+
+.eco-tab-btn.active {
+  background: var(--panel);
+  color: var(--ink);
+  border-color: var(--line);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+.ecosystem-modal-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+  background: var(--bg);
+}
+
+.eco-tab-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.eco-panel-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+
+.eco-search-input {
+  flex: 1;
+  height: 32px;
+}
+
+.eco-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.eco-card {
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.eco-card-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+
+.eco-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 13.5px;
+  color: var(--ink);
+}
+
+.eco-badge {
+  font-size: 10.5px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--pill);
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.eco-badge.active {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-weight: 600;
+}
+
+.eco-card-desc {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.eco-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* Side Panel Goal & Agents */
+.agents-panel-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.agent-section-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.agent-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.goal-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.goal-field-label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.goal-objective-input {
+  font-size: 12.5px;
+  min-height: 52px;
+  resize: vertical;
+}
+
+.goal-budget-input {
+  font-size: 12px;
+}
+
+.goal-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.goal-current-status {
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--ink);
+  line-height: 1.4;
+}
+
+.active-agents-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.active-agent-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.active-agent-card:hover {
+  background: var(--pill);
+}
+
+.active-agent-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.active-agent-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.active-agent-meta {
+  font-size: 11px;
+  color: var(--muted);
+}

@@ -1,4 +1,21 @@
 import {
+  encodeTerminalInputBase64,
+  decodeTerminalOutputBase64,
+  stripAnsiCodes,
+  buildTerminalStartParams,
+  buildTerminalWriteParams,
+  buildTerminalResizeParams,
+  buildTerminalTerminateParams
+} from "./terminal-pane.js";
+import {
+  normalizeSkillsCatalog,
+  buildSkillToggleParams,
+  normalizeMcpServerList,
+  normalizePluginCatalog,
+  extractSubagentsAndLoadedThreads,
+  normalizeThreadGoal
+} from "./ecosystem-panel.js";
+import {
   parseUnifiedDiff,
   buildSplitDiffRows,
   diffFromFileChangeItem,
@@ -114,6 +131,17 @@ const state = {
   fileMentionTrigger: null,
   fileMentionItems: [],
   fileMentionSelectedIndex: 0,
+  terminalPaneOpen: false,
+  terminals: new Map(),
+  activeTerminalId: null,
+  nextTerminalId: 1,
+  ecosystemModalOpen: false,
+  activeEcoTab: "skills",
+  ecoSkills: [],
+  ecoMcpServers: [],
+  ecoPlugins: [],
+  currentThreadGoal: null,
+  activeSubagents: [],
   token: null,
   authMode: "",
   nextRequestId: 1,
@@ -295,6 +323,45 @@ const els = {
   sidePanelAgents: document.querySelector("#sidePanelAgents"),
   agentsPanelContent: document.querySelector("#agentsPanelContent"),
   fileMentionMenu: document.querySelector("#fileMentionMenu"),
+  toggleTerminalBtn: document.querySelector("#toggleTerminalBtn"),
+  openEcosystemBtn: document.querySelector("#openEcosystemBtn"),
+  terminalPane: document.querySelector("#terminalPane"),
+  terminalTabList: document.querySelector("#terminalTabList"),
+  newTerminalTabBtn: document.querySelector("#newTerminalTabBtn"),
+  terminalShellSelect: document.querySelector("#terminalShellSelect"),
+  clearTerminalBtn: document.querySelector("#clearTerminalBtn"),
+  terminalSigintBtn: document.querySelector("#terminalSigintBtn"),
+  killTerminalBtn: document.querySelector("#killTerminalBtn"),
+  closeTerminalPaneBtn: document.querySelector("#closeTerminalPaneBtn"),
+  terminalOutputViewport: document.querySelector("#terminalOutputViewport"),
+  terminalInputForm: document.querySelector("#terminalInputForm"),
+  terminalStdinInput: document.querySelector("#terminalStdinInput"),
+  terminalSendBtn: document.querySelector("#terminalSendBtn"),
+  ecosystemModal: document.querySelector("#ecosystemModal"),
+  ecosystemModalBackdrop: document.querySelector("#ecosystemModalBackdrop"),
+  closeEcosystemModal: document.querySelector("#closeEcosystemModal"),
+  ecoTabSkills: document.querySelector("#ecoTabSkills"),
+  ecoTabMcp: document.querySelector("#ecoTabMcp"),
+  ecoTabPlugins: document.querySelector("#ecoTabPlugins"),
+  ecoPanelSkills: document.querySelector("#ecoPanelSkills"),
+  ecoSkillSearch: document.querySelector("#ecoSkillSearch"),
+  refreshSkillsBtn: document.querySelector("#refreshSkillsBtn"),
+  ecoSkillsList: document.querySelector("#ecoSkillsList"),
+  ecoPanelMcp: document.querySelector("#ecoPanelMcp"),
+  reloadMcpBtn: document.querySelector("#reloadMcpBtn"),
+  refreshMcpBtn: document.querySelector("#refreshMcpBtn"),
+  ecoMcpList: document.querySelector("#ecoMcpList"),
+  ecoPanelPlugins: document.querySelector("#ecoPanelPlugins"),
+  refreshPluginsBtn: document.querySelector("#refreshPluginsBtn"),
+  ecoPluginsList: document.querySelector("#ecoPluginsList"),
+  goalCurrentStatus: document.querySelector("#goalCurrentStatus"),
+  goalForm: document.querySelector("#goalForm"),
+  goalObjectiveInput: document.querySelector("#goalObjectiveInput"),
+  goalBudgetInput: document.querySelector("#goalBudgetInput"),
+  saveGoalBtn: document.querySelector("#saveGoalBtn"),
+  clearGoalBtn: document.querySelector("#clearGoalBtn"),
+  refreshAgentsBtn: document.querySelector("#refreshAgentsBtn"),
+  activeAgentsList: document.querySelector("#activeAgentsList"),
   authPanel: document.querySelector("#authPanel"),
   authText: document.querySelector("#authText"),
   deviceLogin: document.querySelector("#deviceLogin"),
@@ -605,6 +672,36 @@ function bindUi() {
       showToast({ kind: "failed", title: err.message || t("common.failed") });
     }
   });
+  // Terminal Pane Listeners
+  els.toggleTerminalBtn?.addEventListener("click", () => toggleTerminalPane());
+  els.closeTerminalPaneBtn?.addEventListener("click", () => toggleTerminalPane(false));
+  els.newTerminalTabBtn?.addEventListener("click", () => createNewTerminalTab());
+  els.clearTerminalBtn?.addEventListener("click", () => clearCurrentTerminal());
+  els.terminalSigintBtn?.addEventListener("click", () => sendTerminalSigint());
+  els.killTerminalBtn?.addEventListener("click", () => killTerminalProcess());
+  els.terminalInputForm?.addEventListener("submit", (e) => sendTerminalInput(e));
+
+  // Ecosystem Modal Listeners
+  els.openEcosystemBtn?.addEventListener("click", () => toggleEcosystemModal(true));
+  els.closeEcosystemModal?.addEventListener("click", () => toggleEcosystemModal(false));
+  els.ecosystemModalBackdrop?.addEventListener("click", () => toggleEcosystemModal(false));
+  els.ecoTabSkills?.addEventListener("click", () => switchEcoTab("skills"));
+  els.ecoTabMcp?.addEventListener("click", () => switchEcoTab("mcp"));
+  els.ecoTabPlugins?.addEventListener("click", () => switchEcoTab("plugins"));
+  els.ecoSkillSearch?.addEventListener("input", () => renderEcosystemSkills());
+  els.refreshSkillsBtn?.addEventListener("click", () => loadEcosystemSkills());
+  els.reloadMcpBtn?.addEventListener("click", () => reloadAllMcpServers());
+  els.refreshMcpBtn?.addEventListener("click", () => loadEcosystemMcp());
+  els.refreshPluginsBtn?.addEventListener("click", () => loadEcosystemPlugins());
+
+  // Side Panel Goal Listeners
+  els.goalForm?.addEventListener("submit", (e) => {
+    e.preventDefault();
+    saveThreadGoal();
+  });
+  els.clearGoalBtn?.addEventListener("click", () => clearThreadGoal());
+  els.refreshAgentsBtn?.addEventListener("click", () => loadActiveSubagents());
+
   els.toggleSidePanel?.addEventListener("click", () => toggleSidePanel());
   els.closeSidePanel?.addEventListener("click", () => toggleSidePanel(false));
   els.sideTabReview?.addEventListener("click", () => switchSideTab("review"));
@@ -4173,6 +4270,53 @@ function handleNotification(notification) {
     return;
   }
 
+  if (method === "command/exec/outputDelta" || method === "process/outputDelta") {
+    const rawDelta = params.deltaBase64
+      ? (decodeTerminalOutputBase64 ? decodeTerminalOutputBase64(params.deltaBase64) : atob(params.deltaBase64))
+      : (params.delta || params.output || "");
+    const cleanDelta = stripAnsiCodes ? stripAnsiCodes(rawDelta) : rawDelta;
+    const procId = params.processId || params.id;
+    for (const term of state.terminals.values()) {
+      if (term.processId === procId || (!term.processId && procId)) {
+        if (!term.processId) term.processId = procId;
+        term.output += cleanDelta;
+        if (state.activeTerminalId === term.id) {
+          renderTerminalOutput();
+        }
+        break;
+      }
+    }
+    return;
+  }
+
+  if (method === "process/exited") {
+    const procId = params.processId || params.id;
+    for (const term of state.terminals.values()) {
+      if (term.processId === procId) {
+        term.output += t("terminal.exited", { code: params.exitCode ?? 0 });
+        if (state.activeTerminalId === term.id) {
+          renderTerminalOutput();
+        }
+        break;
+      }
+    }
+    return;
+  }
+
+  if (method === "thread/goal/updated" || method === "thread/goal/cleared") {
+    if (params.threadId === state.currentThread?.id) {
+      loadThreadGoal();
+    }
+    return;
+  }
+
+  if (method === "mcpServer/startupStatus/updated" || method === "app/list/updated") {
+    if (state.ecosystemModalOpen && state.activeEcoTab === "mcp") {
+      loadEcosystemMcp().catch(() => {});
+    }
+    return;
+  }
+
   if (method === "turn/diff/updated") {
     state.currentDiff = params.diff || "";
     renderDiffViewer(state.currentDiff);
@@ -5198,7 +5342,7 @@ async function revertThreadToTurn(turnId) {
   if (!confirm(t("turn.revertConfirm"))) return;
 
   try {
-    await rpc("thread/revert", { threadId: current.id, turnId });
+    await rpc("thread/revert", { threadId: current.id, beforeTurnId: turnId, turnId });
     await scheduleCurrentThreadSync(0);
     showToast({
       kind: "completed",
@@ -7273,4 +7417,442 @@ function joinLocalPath(base, relativePath) {
   const cleanBase = base.replace(/[\\/]+$/, "");
   const cleanRelative = relativePath.replace(/[?#].*$/, "").replace(/^[\\/]+/, "").replaceAll("/", slash).replaceAll("\\", slash);
   return `${cleanBase}${slash}${cleanRelative}`;
+}
+
+
+function toggleTerminalPane(force) {
+  if (!els.terminalPane) return;
+  if (state.tokenRole && state.tokenRole !== "owner") return;
+  state.terminalPaneOpen = typeof force === "boolean" ? force : !state.terminalPaneOpen;
+  els.terminalPane.classList.toggle("hidden", !state.terminalPaneOpen);
+  if (els.toggleTerminalBtn) {
+    els.toggleTerminalBtn.classList.toggle("active", state.terminalPaneOpen);
+  }
+  if (state.terminalPaneOpen) {
+    if (state.terminals.size === 0) {
+      createNewTerminalTab();
+    } else {
+      renderTerminalTabs();
+      renderTerminalOutput();
+    }
+    els.terminalStdinInput?.focus();
+  }
+}
+
+function createNewTerminalTab() {
+  if (state.tokenRole && state.tokenRole !== "owner") return;
+  const id = `term-${state.nextTerminalId++}`;
+  const shell = els.terminalShellSelect?.value || "powershell";
+  const cwd = currentEffectiveCwd();
+  const cols = 100;
+  const rows = 28;
+  const startParams = buildTerminalStartParams({
+    processId: id,
+    cwd,
+    cols,
+    rows,
+    shell
+  });
+  const term = {
+    id,
+    processId: id,
+    title: `${shell} #${state.terminals.size + 1}`,
+    shell,
+    cols,
+    rows,
+    output: t("terminal.started", { shell }),
+    exited: false
+  };
+  state.terminals.set(id, term);
+  state.activeTerminalId = id;
+  renderTerminalTabs();
+  renderTerminalOutput();
+
+  rpc("command/exec", startParams)
+    .then((res) => {
+      if (res?.stdout || res?.stderr) {
+        const extra = stripAnsiCodes(`${res.stdout || ""}${res.stderr || ""}`);
+        if (extra) term.output += extra;
+      }
+      if (!term.exited && typeof res?.exitCode === "number") {
+        term.exited = true;
+        term.output += t("terminal.exited", { code: res.exitCode });
+      }
+      if (state.activeTerminalId === term.id) renderTerminalOutput();
+    })
+    .catch((err) => {
+      term.output += `\n[Error: ${err?.message || "Terminal failed"}]\n`;
+      if (state.activeTerminalId === term.id) renderTerminalOutput();
+    });
+}
+
+function renderTerminalTabs() {
+  if (!els.terminalTabList) return;
+  els.terminalTabList.innerHTML = "";
+  for (const term of state.terminals.values()) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = `terminal-tab-btn ${state.activeTerminalId === term.id ? "active" : ""}`;
+    btn.textContent = term.title;
+    btn.addEventListener("click", () => {
+      state.activeTerminalId = term.id;
+      renderTerminalTabs();
+      renderTerminalOutput();
+    });
+    els.terminalTabList.append(btn);
+  }
+}
+
+function renderTerminalOutput() {
+  if (!els.terminalOutputViewport) return;
+  const active = state.terminals.get(state.activeTerminalId);
+  if (!active) {
+    els.terminalOutputViewport.textContent = t("terminal.empty");
+    return;
+  }
+  els.terminalOutputViewport.textContent = active.output || t("terminal.empty");
+  els.terminalOutputViewport.scrollTop = els.terminalOutputViewport.scrollHeight;
+}
+
+async function sendTerminalInput(event) {
+  if (event) event.preventDefault();
+  const active = state.terminals.get(state.activeTerminalId);
+  if (!active || !els.terminalStdinInput) return;
+  const raw = els.terminalStdinInput.value;
+  els.terminalStdinInput.value = "";
+  const line = raw + "\r\n";
+  active.output += `> ${raw}\n`;
+  renderTerminalOutput();
+  try {
+    await rpc("command/exec/write", buildTerminalWriteParams(active.processId, line));
+  } catch (err) {
+    active.output += `\n[Write error: ${err?.message || "failed"}]\n`;
+    renderTerminalOutput();
+  }
+}
+
+async function sendTerminalSigint() {
+  const active = state.terminals.get(state.activeTerminalId);
+  if (!active) return;
+  try {
+    await rpc("command/exec/write", buildTerminalWriteParams(active.processId, "\x03"));
+  } catch (err) {
+    showToast({ kind: "failed", title: err?.message || t("common.failed") });
+  }
+}
+
+async function resizeActiveTerminal(cols = 100, rows = 28) {
+  const active = state.terminals.get(state.activeTerminalId);
+  if (!active) return;
+  active.cols = cols;
+  active.rows = rows;
+  try {
+    await rpc("command/exec/resize", buildTerminalResizeParams(active.processId, cols, rows));
+  } catch (_) {}
+}
+
+async function killTerminalProcess() {
+  const active = state.terminals.get(state.activeTerminalId);
+  if (!active) return;
+  try {
+    await rpc("command/exec/terminate", buildTerminalTerminateParams(active.processId));
+    active.exited = true;
+    active.output += t("terminal.exited", { code: -1 });
+    renderTerminalOutput();
+  } catch (err) {
+    showToast({ kind: "failed", title: err?.message || t("common.failed") });
+  }
+}
+
+function clearCurrentTerminal() {
+  const active = state.terminals.get(state.activeTerminalId);
+  if (!active) return;
+  active.output = "";
+  renderTerminalOutput();
+}
+
+function toggleEcosystemModal(force) {
+  if (!els.ecosystemModal) return;
+  state.ecosystemModalOpen = typeof force === "boolean" ? force : !state.ecosystemModalOpen;
+  els.ecosystemModal.classList.toggle("hidden", !state.ecosystemModalOpen);
+  if (state.ecosystemModalOpen) {
+    switchEcoTab(state.activeEcoTab || "skills");
+  }
+}
+
+function switchEcoTab(tabName) {
+  state.activeEcoTab = tabName;
+  const tabs = [
+    { name: "skills", btn: els.ecoTabSkills, panel: els.ecoPanelSkills },
+    { name: "mcp", btn: els.ecoTabMcp, panel: els.ecoPanelMcp },
+    { name: "plugins", btn: els.ecoTabPlugins, panel: els.ecoPanelPlugins }
+  ];
+  for (const tab of tabs) {
+    const isActive = tab.name === tabName;
+    if (tab.btn) {
+      tab.btn.classList.toggle("active", isActive);
+      tab.btn.setAttribute("aria-selected", isActive ? "true" : "false");
+    }
+    if (tab.panel) {
+      tab.panel.classList.toggle("hidden", !isActive);
+    }
+  }
+  if (tabName === "skills") {
+    loadEcosystemSkills().catch(() => {});
+  } else if (tabName === "mcp") {
+    loadEcosystemMcp().catch(() => {});
+  } else if (tabName === "plugins") {
+    loadEcosystemPlugins().catch(() => {});
+  }
+}
+
+async function loadEcosystemSkills() {
+  if (!els.ecoSkillsList) return;
+  try {
+    const res = await rpc("skills/list", { cwds: [currentEffectiveCwd()] });
+    state.ecoSkills = normalizeSkillsCatalog(res);
+    renderEcosystemSkills();
+  } catch (err) {
+    els.ecoSkillsList.innerHTML = `<div class="side-panel-empty">${escapeHtml(err?.message || t("common.failed"))}</div>`;
+  }
+}
+
+function renderEcosystemSkills() {
+  if (!els.ecoSkillsList) return;
+  const query = String(els.ecoSkillSearch?.value || "").trim().toLowerCase();
+  const isOwner = !state.tokenRole || state.tokenRole === "owner";
+  const items = (state.ecoSkills || []).filter((item) => {
+    if (!query) return true;
+    return item.name.toLowerCase().includes(query) || item.description.toLowerCase().includes(query);
+  });
+
+  if (!items.length) {
+    els.ecoSkillsList.innerHTML = `<div class="side-panel-empty">${escapeHtml(t("skill.empty"))}</div>`;
+    return;
+  }
+
+  els.ecoSkillsList.innerHTML = items.map((skill, idx) => `
+    <div class="eco-card" data-skill-idx="${idx}">
+      <div class="eco-card-main">
+        <div class="eco-card-title-row">
+          <strong>${escapeHtml(skill.name)}</strong>
+          <span class="eco-badge">${escapeHtml(skill.scope || "user")}</span>
+        </div>
+        <p class="eco-card-desc">${escapeHtml(skill.description || "")}</p>
+        ${skill.path ? `<div class="eco-card-path">${escapeHtml(skill.path)}</div>` : ""}
+      </div>
+      <label class="eco-toggle-label">
+        <input type="checkbox" class="eco-skill-toggle" data-skill-idx="${idx}" ${skill.enabled !== false ? "checked" : ""} ${!isOwner ? "disabled" : ""} />
+      </label>
+    </div>
+  `).join("");
+
+  els.ecoSkillsList.querySelectorAll(".eco-skill-toggle").forEach((input) => {
+    input.addEventListener("change", async () => {
+      const skill = items[Number(input.dataset.skillIdx)];
+      if (!skill) return;
+      try {
+        await rpc("skills/config/write", buildSkillToggleParams(skill, input.checked));
+        skill.enabled = input.checked;
+        loadSkills(currentEffectiveCwd(), { forceReload: true }).catch(() => {});
+      } catch (err) {
+        input.checked = !input.checked;
+        showToast({ kind: "failed", title: err?.message || t("common.failed") });
+      }
+    });
+  });
+}
+
+async function loadEcosystemMcp() {
+  if (!els.ecoMcpList) return;
+  try {
+    const res = await rpc("mcpServerStatus/list", {});
+    state.ecoMcpServers = normalizeMcpServerList(res);
+    renderEcosystemMcp();
+  } catch (err) {
+    els.ecoMcpList.innerHTML = `<div class="side-panel-empty">${escapeHtml(err?.message || t("common.failed"))}</div>`;
+  }
+}
+
+function renderEcosystemMcp() {
+  if (!els.ecoMcpList) return;
+  const servers = state.ecoMcpServers || [];
+  if (!servers.length) {
+    els.ecoMcpList.innerHTML = `<div class="side-panel-empty">No MCP servers configured</div>`;
+    return;
+  }
+  const isOwner = !state.tokenRole || state.tokenRole === "owner";
+  els.ecoMcpList.innerHTML = servers.map((srv, idx) => `
+    <div class="eco-card">
+      <div class="eco-card-main">
+        <div class="eco-card-title-row">
+          <strong>${escapeHtml(srv.name)}</strong>
+          <span class="eco-badge">${escapeHtml(srv.status || "unknown")}</span>
+          <span class="eco-badge">Tools: ${Number(srv.toolCount || 0)}</span>
+          <span class="eco-badge">Resources: ${Number(srv.resourceCount || 0)}</span>
+        </div>
+        ${srv.error ? `<p class="eco-card-desc" style="color: var(--danger);">${escapeHtml(srv.error)}</p>` : ""}
+      </div>
+      ${isOwner ? `<button type="button" class="secondary-action compact-action eco-mcp-oauth-btn" data-mcp-idx="${idx}">OAuth</button>` : ""}
+    </div>
+  `).join("");
+
+  els.ecoMcpList.querySelectorAll(".eco-mcp-oauth-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const srv = servers[Number(btn.dataset.mcpIdx)];
+      if (!srv) return;
+      try {
+        await rpc("mcpServer/oauth/login", { name: srv.name, threadId: state.currentThread?.id || null });
+        await loadEcosystemMcp();
+      } catch (err) {
+        showToast({ kind: "failed", title: err?.message || t("common.failed") });
+      }
+    });
+  });
+}
+
+async function reloadAllMcpServers() {
+  try {
+    await rpc("config/mcpServer/reload", {});
+    await loadEcosystemMcp();
+  } catch (err) {
+    showToast({ kind: "failed", title: err?.message || t("common.failed") });
+  }
+}
+
+async function loadEcosystemPlugins() {
+  if (!els.ecoPluginsList) return;
+  try {
+    let res;
+    try {
+      res = await rpc("plugin/list", {});
+    } catch (_) {
+      res = await rpc("plugin/installed", {});
+    }
+    state.ecoPlugins = normalizePluginCatalog(res);
+    renderEcosystemPlugins();
+  } catch (err) {
+    els.ecoPluginsList.innerHTML = `<div class="side-panel-empty">${escapeHtml(err?.message || t("common.failed"))}</div>`;
+  }
+}
+
+function renderEcosystemPlugins() {
+  if (!els.ecoPluginsList) return;
+  const plugins = state.ecoPlugins || [];
+  if (!plugins.length) {
+    els.ecoPluginsList.innerHTML = `<div class="side-panel-empty">No plugins found</div>`;
+    return;
+  }
+  els.ecoPluginsList.innerHTML = plugins.map((plugin) => `
+    <div class="eco-card">
+      <div class="eco-card-main">
+        <div class="eco-card-title-row">
+          <strong>${escapeHtml(plugin.name || plugin.id)}</strong>
+          ${plugin.version ? `<span class="eco-badge">v${escapeHtml(plugin.version)}</span>` : ""}
+          ${plugin.marketplace ? `<span class="eco-badge">${escapeHtml(plugin.marketplace)}</span>` : ""}
+          <span class="eco-badge">${plugin.installed ? "Installed" : "Available"}</span>
+        </div>
+      </div>
+    </div>
+  `).join("");
+}
+
+async function loadThreadGoal() {
+  if (!els.goalCurrentStatus) return;
+  const threadId = state.currentThread?.id;
+  if (!threadId) {
+    els.goalCurrentStatus.textContent = t("agents.goalNone");
+    return;
+  }
+  try {
+    const res = await rpc("thread/goal/get", { threadId });
+    const goal = normalizeThreadGoal(res);
+    state.currentThreadGoal = goal;
+    if (goal && goal.active && goal.objective) {
+      const budgetText = goal.tokenBudget
+        ? ` (${goal.tokensUsed || 0} / ${goal.tokenBudget} tokens${goal.progressPercent != null ? `, ${goal.progressPercent}%` : ""})`
+        : "";
+      els.goalCurrentStatus.textContent = `[${goal.status || "active"}] ${goal.objective}${budgetText}`;
+      if (els.goalObjectiveInput && !els.goalObjectiveInput.value) {
+        els.goalObjectiveInput.value = goal.objective;
+      }
+    } else {
+      els.goalCurrentStatus.textContent = t("agents.goalNone");
+    }
+  } catch (_) {
+    els.goalCurrentStatus.textContent = t("agents.goalNone");
+  }
+}
+
+async function saveThreadGoal() {
+  const threadId = state.currentThread?.id;
+  if (!threadId || !els.goalObjectiveInput) return;
+  const objective = els.goalObjectiveInput.value.trim();
+  if (!objective) return;
+  const rawBudget = els.goalBudgetInput?.value ? Number(els.goalBudgetInput.value) : null;
+  const tokenBudget = Number.isFinite(rawBudget) && rawBudget > 0 ? rawBudget : null;
+  try {
+    await rpc("thread/goal/set", {
+      threadId,
+      objective,
+      status: "active",
+      ...(tokenBudget ? { tokenBudget } : {})
+    });
+    showToast({ kind: "completed", title: t("agents.goalSaved") });
+    await loadThreadGoal();
+  } catch (err) {
+    showToast({ kind: "failed", title: err?.message || t("common.failed") });
+  }
+}
+
+async function clearThreadGoal() {
+  const threadId = state.currentThread?.id;
+  if (!threadId) return;
+  try {
+    await rpc("thread/goal/clear", { threadId });
+    if (els.goalObjectiveInput) els.goalObjectiveInput.value = "";
+    if (els.goalBudgetInput) els.goalBudgetInput.value = "";
+    showToast({ kind: "completed", title: t("agents.goalCleared") });
+    await loadThreadGoal();
+  } catch (err) {
+    showToast({ kind: "failed", title: err?.message || t("common.failed") });
+  }
+}
+
+async function loadActiveSubagents() {
+  if (!els.activeAgentsList) return;
+  try {
+    const loadedResult = await rpc("thread/loaded/list", {});
+    const items = extractSubagentsAndLoadedThreads({
+      loadedResult,
+      threads: state.threads,
+      currentThreadId: state.currentThread?.id || "",
+      messages: state.messages
+    });
+    state.activeSubagents = items;
+    if (!items.length) {
+      els.activeAgentsList.innerHTML = `<div class="side-panel-empty">${escapeHtml(t("agents.emptyList"))}</div>`;
+      return;
+    }
+    els.activeAgentsList.innerHTML = items.map((item, idx) => `
+      <button type="button" class="agent-thread-card" data-agent-idx="${idx}">
+        <div class="eco-card-title-row">
+          <strong>${escapeHtml(item.name || item.threadId)}</strong>
+          <span class="eco-badge">${escapeHtml(item.isSubagent ? t("agents.subagentBadge") : t("agents.activeBadge"))}</span>
+        </div>
+        ${item.cwd ? `<div class="eco-card-path">${escapeHtml(item.cwd)}</div>` : ""}
+      </button>
+    `).join("");
+
+    els.activeAgentsList.querySelectorAll(".agent-thread-card").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const target = items[Number(btn.dataset.agentIdx)];
+        if (!target?.threadId) return;
+        const found = state.threads.find((th) => th.id === target.threadId) || { id: target.threadId, name: target.name, cwd: target.cwd };
+        openThread(found);
+      });
+    });
+  } catch (_) {
+    els.activeAgentsList.innerHTML = `<div class="side-panel-empty">${escapeHtml(t("agents.emptyList"))}</div>`;
+  }
 }
