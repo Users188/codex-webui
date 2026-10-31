@@ -291,6 +291,8 @@ const els = {
   trafficSummary: document.querySelector("#trafficSummary"),
   collaborationModeSelect: document.querySelector("#collaborationModeSelect"),
   serviceTierSelect: document.querySelector("#serviceTierSelect"),
+  composerMetaRow: document.querySelector("#composerMetaRow"),
+  composerToolbar: document.querySelector("#composerToolbar"),
   planModeToggle: document.querySelector("#planModeToggle"),
   planPanel: document.querySelector("#planPanel"),
   tokenUsageBadge: document.querySelector("#tokenUsageBadge"),
@@ -1324,10 +1326,15 @@ function setupImageComposer() {
   const tray = document.createElement("div");
   tray.className = "image-tray hidden";
 
-  els.composer.prepend(imageInput);
-  els.composer.prepend(attachButton);
-  els.composer.prepend(settingsButton);
-  els.composer.insertBefore(tray, els.promptInput);
+  const targetToolbar = document.querySelector("#composerToolbar") || els.composerToolbar || els.composerMetaRow || els.composer;
+  targetToolbar.append(settingsButton, attachButton, imageInput);
+  if (els.composerInputRow && els.composerInputRow.parentNode === els.composer) {
+    els.composer.insertBefore(tray, els.composerInputRow);
+  } else if (els.promptInput && els.promptInput.parentNode === els.composer) {
+    els.composer.insertBefore(tray, els.promptInput);
+  } else {
+    els.composer.appendChild(tray);
+  }
   els.settingsToggle = settingsButton;
   els.imageInput = imageInput;
   els.imageTray = tray;
@@ -4270,14 +4277,14 @@ function handleNotification(notification) {
     return;
   }
 
-  if (method === "command/exec/outputDelta" || method === "process/outputDelta") {
+  if (method === "command/exec/outputDelta" || method === "process/outputDelta" || method === "item/commandExecution/outputDelta" || method === "commandExecution/outputDelta") {
     const rawDelta = params.deltaBase64
       ? (decodeTerminalOutputBase64 ? decodeTerminalOutputBase64(params.deltaBase64) : atob(params.deltaBase64))
       : (params.delta || params.output || "");
     const cleanDelta = stripAnsiCodes ? stripAnsiCodes(rawDelta) : rawDelta;
     const procId = params.processId || params.id;
     for (const term of state.terminals.values()) {
-      if (term.processId === procId || (!term.processId && procId)) {
+      if (term.processId === procId || (!term.processId && procId) || (!procId && state.terminals.size === 1) || (!procId && state.activeTerminalId === term.id)) {
         if (!term.processId) term.processId = procId;
         term.output += cleanDelta;
         if (state.activeTerminalId === term.id) {

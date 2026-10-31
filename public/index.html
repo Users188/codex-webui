@@ -54,8 +54,11 @@
           <button class="icon-button mobile-only" id="openSidebar" aria-label="打开会话列表" data-i18n-aria-label="sidebar.open">☰</button>
           <div class="thread-title-wrap">
             <div class="thread-title-line">
+              <div class="thread-title-main">
               <input class="thread-title" id="threadTitle" placeholder="未选择会话" data-i18n-placeholder="thread.notSelected" disabled />
               <span class="token-usage-badge hidden" id="tokenUsageBadge" title="上下文 Token 用量" data-i18n-title="usage.tokensTitle"></span>
+              </div>
+              <div class="topbar-actions" id="topbarActions">
               <button class="icon-button thread-action-btn" id="compactThreadBtn" type="button" title="压缩上下文" data-i18n-title="thread.compact">
                 <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 14h6m0 0v6m0-6L3 21m17-7h-6m0 0v6m0-6l7 7M4 10h6m0 0V4m0 6L3 3m17 7h-6m0 0V4m0 6l7-7"/></svg>
               </button>
@@ -85,6 +88,7 @@
                   <path class="fullscreen-icon-exit" d="M5 16h3v3h2v-5H5v2Zm3-8H5v2h5V5H8v3Zm6 11h2v-3h3v-2h-5v5Zm2-11V5h-2v5h5V8h-3Z" />
                 </svg>
               </button>
+              </div>
             </div>
             <div class="thread-meta" id="threadMeta" data-i18n="common.ready">准备就绪</div>
           </div>
@@ -129,12 +133,6 @@
         </div>
 
         <form class="composer" id="composer">
-          <div class="composer-toolbar" id="composerToolbar">
-            <button class="plan-mode-toggle" id="planModeToggle" type="button" title="快捷切换 Plan 模式" data-i18n-title="plan.toggleTitle">
-              <span class="plan-mode-icon">📋</span>
-              <span class="plan-mode-label" data-i18n="plan.toggle">Plan</span>
-            </button>
-          </div>
           <div class="follow-up-menu hidden" id="followUpMenu" role="menu" aria-label="选择后续消息方式" data-i18n-aria-label="composer.chooseFollowUpTitle">
             <button class="follow-up-option" type="button" role="menuitem" data-follow-up-mode="steer">
               <strong data-i18n="composer.steerOption">立即引导</strong>
@@ -151,8 +149,21 @@
           </div>
           <div class="skill-menu hidden" id="skillMenu" role="listbox" aria-label="选择技能" data-i18n-aria-label="skill.menuLabel"></div>
           <div class="file-mention-menu hidden" id="fileMentionMenu" role="listbox" aria-label="文件补全" data-i18n-aria-label="mention.menuLabel"></div>
-          <textarea id="promptInput" rows="1" placeholder="发消息给 Codex" data-i18n-placeholder="composer.placeholder"></textarea>
-          <button class="send-button" id="sendButton" type="submit" data-i18n="composer.send" aria-label="发送" disabled>发送</button>
+          <div class="composer-input-row" id="composerInputRow">
+            <textarea id="promptInput" rows="1" placeholder="发消息给 Codex" data-i18n-placeholder="composer.placeholder"></textarea>
+          </div>
+          <div class="composer-meta-row" id="composerMetaRow">
+            <div class="composer-toolbar" id="composerToolbar">
+              <button class="plan-mode-toggle" id="planModeToggle" type="button" title="快捷切换 Plan 模式" data-i18n-title="plan.toggleTitle">
+                <span class="plan-mode-icon">📋</span>
+                <span class="plan-mode-label" data-i18n="plan.toggle">Plan</span>
+              </button>
+              <div class="composer-inline-actions" id="composerInlineActions"></div>
+            </div>
+            <div class="composer-submit-wrap">
+              <button class="send-button" id="sendButton" type="submit" data-i18n="composer.send" aria-label="发送" disabled>发送</button>
+            </div>
+          </div>
         </form>
 
         <section class="terminal-pane hidden" id="terminalPane">
