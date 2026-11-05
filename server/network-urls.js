@@ -26,13 +26,62 @@ export function getLanUrls(port, networkInterfaces = os.networkInterfaces()) {
 
 export function isTailscaleAddress(address) {
   if (!address) return false;
-  const clean = String(address).startsWith("::ffff:") ? String(address).slice(7) : String(address);
+  const raw = String(address).trim();
+  const noZone = raw.split("%")[0];
+  const clean = noZone.startsWith("::ffff:") ? noZone.slice(7) : noZone;
   const octets = ipv4Octets(clean);
   if (octets) {
     const [first, second] = octets;
     return first === 100 && second >= 64 && second <= 127;
   }
   return /^fd7a:115c:a1e0:/i.test(clean);
+}
+
+export function isTailscaleHost(hostHeader, hostname = os.hostname()) {
+  if (!hostHeader) return false;
+  const rawHost = String(hostHeader).trim();
+  let host = rawHost;
+  if (host.startsWith("[")) {
+    const endBracket = host.indexOf("]");
+    if (endBracket !== -1) {
+      host = host.slice(1, endBracket);
+    }
+  } else {
+    host = host.split(":")[0];
+  }
+  const normalized = host.toLowerCase().trim();
+  if (!normalized) return false;
+  if (normalized.endsWith(".ts.net") || normalized.endsWith(".ts.net.")) return true;
+  if (hostname && normalized === String(hostname).toLowerCase().trim()) return true;
+  return false;
+}
+
+export function isLoopbackOrLocalAddress(address, networkInterfaces = os.networkInterfaces()) {
+  if (!address) return false;
+  const raw = String(address).trim();
+  const noZone = raw.split("%")[0].toLowerCase();
+  const clean = noZone.startsWith("::ffff:") ? noZone.slice(7) : noZone;
+
+  if (clean === "127.0.0.1" || clean === "::1" || clean === "localhost") {
+    return true;
+  }
+
+  const octets = ipv4Octets(clean);
+  if (octets && octets[0] === 198 && (octets[1] === 18 || octets[1] === 19)) {
+    return true;
+  }
+
+  for (const entries of Object.values(networkInterfaces || {})) {
+    for (const entry of entries || []) {
+      const entryAddr = String(entry?.address || "").split("%")[0].toLowerCase();
+      const entryClean = entryAddr.startsWith("::ffff:") ? entryAddr.slice(7) : entryAddr;
+      if (entryClean && (clean === entryClean || noZone === entryAddr)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
 }
 
 export function getPrimaryLanUrl(port, networkInterfaces = os.networkInterfaces()) {

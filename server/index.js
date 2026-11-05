@@ -18,7 +18,7 @@ import {
   tokenStorePath
 } from "./token-store.js";
 import { UsageTracker } from "./usage-store.js";
-import { getLanUrls, isTailscaleAddress } from "./network-urls.js";
+import { getLanUrls, isLoopbackOrLocalAddress, isTailscaleAddress, isTailscaleHost } from "./network-urls.js";
 import { DesktopBridgeConnection } from "./desktop-bridge-client.js";
 import { sanitizeDesktopBridgeParams } from "./desktop-bridge-policy.js";
 import { isWebUserServerRequest } from "./server-request-policy.js";
@@ -40,7 +40,7 @@ const cloudflareAccessConfig = readCloudflareAccessConfig(dataDir);
 const cloudflareAccessAuthenticator = new CloudflareAccessAuthenticator(cloudflareAccessConfig);
 
 const PORT = Number(process.env.PORT || 9526);
-const HOST = process.env.HOST || "0.0.0.0";
+let HOST = process.env.HOST || "::";
 const DEFAULT_CWD = process.env.CODEX_WEBUI_CWD || rootDir;
 const usesEnvironmentTokens = Boolean(
   String(process.env.CODEX_WEBUI_TOKEN || "").trim()
@@ -961,7 +961,7 @@ let listenAttempts = 0;
 let listenRetryTimer = null;
 
 function tryListen() {
-  server.listen(PORT, HOST);
+  server.listen({ port: PORT, host: HOST, ipv6Only: false });
 }
 
 server.once("listening", async () => {
@@ -993,6 +993,12 @@ server.once("listening", async () => {
 });
 
 server.on("error", (error) => {
+  if ((error.code === "EADDRNOTAVAIL" || error.code === "EAFNOSUPPORT") && HOST === "::") {
+    console.warn(`[codex-webui] Dual-stack IPv6 (::) failed with ${error.code}; falling back to 0.0.0.0`);
+    HOST = "0.0.0.0";
+    tryListen();
+    return;
+  }
   if (error.code === "EADDRINUSE" && listenAttempts < MAX_LISTEN_RETRIES) {
     listenAttempts++;
     const delay = listenAttempts * INITIAL_RETRY_DELAY_MS;
@@ -1269,13 +1275,15 @@ function scopeFromToken(token) {
 }
 
 function isLoopbackAddress(address) {
-  if (!address) return false;
-  return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
+  return isLoopbackOrLocalAddress(address);
 }
 
 function isLoopbackRequest(req) {
   const remote = req.socket?.remoteAddress;
-  return isLoopbackAddress(remote);
+  const local = req.socket?.localAddress;
+  if (!remote) return false;
+  if (local && remote === local) return true;
+  return isLoopbackOrLocalAddress(remote);
 }
 
 function localhostBypassEnabled() {
@@ -1285,7 +1293,11 @@ function localhostBypassEnabled() {
 
 function isTailscaleRequest(req) {
   const remote = req.socket?.remoteAddress;
-  return isTailscaleAddress(remote);
+  const local = req.socket?.localAddress;
+  if (isTailscaleAddress(remote)) return true;
+  if (isTailscaleAddress(local)) return true;
+  if (isLoopbackRequest(req) && isTailscaleHost(req.headers?.host)) return true;
+  return false;
 }
 
 function tailscaleBypassEnabled() {
@@ -1307,13 +1319,13 @@ async function resolveRequestScope(req, url) {
   const tokenScope = scopeFromToken(rawToken);
   if (tokenScope) return tokenScope;
 
+  if (!rawToken && isTailscaleRequest(req) && tailscaleBypassEnabled()) {
+    return resolveTailscaleScope();
+  }
+
   if (!rawToken && isLoopbackRequest(req) && localhostBypassEnabled()) {
     refreshTokenScopesIfChanged();
     return defaultTokenScope;
-  }
-
-  if (!rawToken && isTailscaleRequest(req) && tailscaleBypassEnabled()) {
-    return resolveTailscaleScope();
   }
 
   let identity = null;

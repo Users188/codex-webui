@@ -4515,7 +4515,7 @@ function handleNotification(notification) {
     replaceOrAppendMessage(message);
     state.lastMessageAt = itemTimestamp(params.item) || currentUnixSeconds();
     renderMessages(shouldStickToBottom);
-    scheduleCurrentThreadSync(0);
+    scheduleCurrentThreadSync();
     return;
   }
 
@@ -5863,7 +5863,7 @@ function ensureReplyProgressIndicator(threadId, scroll = true) {
 function startReplyProgress(threadId) {
   if (threadId) state.replyProgressThreadIds.add(threadId);
   updateSendMode();
-  if (threadId === state.currentThread?.id) scheduleCurrentThreadSync(0);
+  if (threadId === state.currentThread?.id) scheduleCurrentThreadSync();
 }
 
 function reconcileApprovals(requests) {
@@ -5961,36 +5961,178 @@ function scrollMessagesToBottom() {
   });
 }
 
+function entryKey(entry) {
+  if (entry.type === "toolGroup") {
+    const ids = (entry.messages || []).map((m) => m?.id || "").filter(Boolean);
+    return `tg:${ids.join(",") || "empty"}`;
+  }
+  const msg = entry.message;
+  if (!msg) return "";
+  if (msg.id) return `msg:${msg.id}`;
+  if (msg.pendingReply) return `pending:${msg.threadId || "reply"}`;
+  return `msg:tmp_${msg.role}_${msg.turnId || ""}_${String(msg.text || "").slice(0, 20)}`;
+}
+
+function renderEntryNode(entry) {
+  let node;
+  if (entry.type === "toolGroup") {
+    node = renderToolGroup(entry.messages);
+  } else {
+    node = renderMessage(entry.message);
+  }
+  if (node) {
+    node.dataset.entryKey = entryKey(entry);
+    if (entry.type === "message" && entry.message?.id) {
+      node.dataset.messageId = String(entry.message.id);
+    }
+  }
+  return node;
+}
+
+function reconcileMessageStream(stream) {
+  const newEntries = groupMessagesForDisplay(state.messages);
+  const newKeys = newEntries.map(entryKey);
+
+  const existingNodes = Array.from(stream.children).filter(
+    (node) => !node.classList.contains("reply-progress-footer")
+  );
+  const existingKeys = existingNodes.map((n) => n.dataset.entryKey || "");
+
+  if (newKeys.length === existingKeys.length && newKeys.every((k, i) => k === existingKeys[i])) {
+    if (newEntries.length > 0) {
+      const lastIndex = newEntries.length - 1;
+      const updatedNode = renderEntryNode(newEntries[lastIndex]);
+      existingNodes[lastIndex].replaceWith(updatedNode);
+    }
+  } else if (
+    newKeys.length > existingKeys.length
+    && existingKeys.every((k, i) => k === newKeys[i])
+  ) {
+    if (existingNodes.length > 0) {
+      const lastPrevIndex = existingNodes.length - 1;
+      const updatedPrevNode = renderEntryNode(newEntries[lastPrevIndex]);
+      existingNodes[lastPrevIndex].replaceWith(updatedPrevNode);
+    }
+    const footer = stream.querySelector(".reply-progress-footer");
+    for (let i = existingKeys.length; i < newEntries.length; i++) {
+      const newNode = renderEntryNode(newEntries[i]);
+      if (footer) stream.insertBefore(newNode, footer);
+      else stream.append(newNode);
+    }
+  } else if (
+    newKeys.length > existingKeys.length
+    && existingKeys.every((k, i) => k === newKeys[i + (newKeys.length - existingKeys.length)])
+  ) {
+    const prependCount = newKeys.length - existingKeys.length;
+    const firstExisting = existingNodes[0];
+    for (let i = 0; i < prependCount; i++) {
+      const newNode = renderEntryNode(newEntries[i]);
+      if (firstExisting) stream.insertBefore(newNode, firstExisting);
+      else stream.append(newNode);
+    }
+  } else {
+    const existingNodeMap = new Map();
+    for (const node of existingNodes) {
+      const key = node.dataset.entryKey;
+      if (key) existingNodeMap.set(key, node);
+    }
+    const fragment = document.createDocumentFragment();
+    for (let i = 0; i < newEntries.length; i++) {
+      const entry = newEntries[i];
+      const key = entryKey(entry);
+      const isLast = (i === newEntries.length - 1);
+      let node;
+      if (existingNodeMap.has(key) && !isLast) {
+        node = existingNodeMap.get(key);
+        existingNodeMap.delete(key);
+      } else {
+        node = renderEntryNode(entry);
+      }
+      fragment.append(node);
+    }
+    for (const unused of existingNodeMap.values()) {
+      unused.remove();
+    }
+    const footer = stream.querySelector(".reply-progress-footer");
+    stream.innerHTML = "";
+    stream.append(fragment);
+    if (footer) stream.append(footer);
+  }
+
+  const shouldHaveFooter = Boolean(
+    state.currentThread?.id && state.replyProgressThreadIds.has(state.currentThread.id)
+  );
+  const currentFooter = stream.querySelector(".reply-progress-footer");
+  if (shouldHaveFooter && !currentFooter) {
+    const footer = renderReplyProgressFooter();
+    if (footer) stream.append(footer);
+  } else if (!shouldHaveFooter && currentFooter) {
+    currentFooter.remove();
+  }
+}
+
 function renderMessages(scroll = true) {
   if (!state.messages.length) {
     updateTrafficSummary();
     renderEmpty(t("empty.newTitle"), t("empty.newDescription"));
+    if (els.messages) els.messages.dataset.renderedThreadId = "";
     return;
   }
 
-  const preservedTop = els.messages.scrollTop;
-  els.messages.innerHTML = "";
-  const historyLoader = renderHistoryLoader();
-  if (historyLoader) {
-    els.messages.append(historyLoader);
-  }
-  const stream = document.createElement("div");
-  stream.className = "message-stream";
-  for (const entry of groupMessagesForDisplay(state.messages)) {
-    if (entry.type === "toolGroup") {
-      stream.append(renderToolGroup(entry.messages));
-    } else {
-      stream.append(renderMessage(entry.message));
-    }
-  }
-  const progressFooter = renderReplyProgressFooter();
-  if (progressFooter) stream.append(progressFooter);
-  els.messages.append(stream);
+  const currentThreadId = String(state.currentThread?.id || "");
+  const isDifferentThread = els.messages.dataset.renderedThreadId !== currentThreadId;
+  els.messages.dataset.renderedThreadId = currentThreadId;
 
-  const lastMessageTime = renderLastMessageTime();
-  if (lastMessageTime) {
-    els.messages.append(lastMessageTime);
+  let stream = els.messages.querySelector(".message-stream");
+  const preservedTop = els.messages.scrollTop;
+
+  if (isDifferentThread || !stream || els.messages.querySelector(".empty-state") || els.messages.querySelector(".thread-loading")) {
+    els.messages.innerHTML = "";
+    const historyLoader = renderHistoryLoader();
+    if (historyLoader) els.messages.append(historyLoader);
+
+    stream = document.createElement("div");
+    stream.className = "message-stream";
+    for (const entry of groupMessagesForDisplay(state.messages)) {
+      const node = renderEntryNode(entry);
+      if (node) stream.append(node);
+    }
+    const progressFooter = renderReplyProgressFooter();
+    if (progressFooter) stream.append(progressFooter);
+    els.messages.append(stream);
+
+    const lastMessageTime = renderLastMessageTime();
+    if (lastMessageTime) els.messages.append(lastMessageTime);
+
+    if (scroll) scrollMessagesToBottom();
+    else els.messages.scrollTop = preservedTop;
+    updateTrafficSummary();
+    return;
   }
+
+  reconcileMessageStream(stream);
+
+  const existingLoader = els.messages.querySelector(".history-loader");
+  if (state.loadingOlderTurns && !existingLoader) {
+    const loader = renderHistoryLoader();
+    if (loader) els.messages.prepend(loader);
+  } else if (!state.loadingOlderTurns && existingLoader) {
+    existingLoader.remove();
+  }
+
+  const existingTime = els.messages.querySelector(".last-message-time");
+  if (state.lastMessageAt) {
+    const timeText = t("lastMessage", { time: formatDateTime(state.lastMessageAt) });
+    if (existingTime) {
+      existingTime.textContent = timeText;
+    } else {
+      const node = renderLastMessageTime();
+      if (node) els.messages.append(node);
+    }
+  } else if (existingTime) {
+    existingTime.remove();
+  }
+
   if (scroll) {
     scrollMessagesToBottom();
   } else {
@@ -6148,19 +6290,79 @@ function renderMessage(message) {
 }
 
 function patchStreamingMessage(message, scroll) {
-  if (!message?.id || message.role !== "assistant" || message.kind) return false;
-  if (extractProposedPlan(message.text || "").hasPlan) return false;
-  const item = Array.from(els.messages.querySelectorAll("[data-message-id]"))
-    .find((node) => node.dataset.messageId === String(message.id));
-  const bubble = item?.querySelector(".bubble.markdown");
-  if (!item || !bubble) return false;
+  if (!message?.id) return false;
 
-  bubble.innerHTML = renderMarkdown(message.text || "");
-  item.classList.toggle("streaming-reply", Boolean(message.streamingReply));
-  bindImagePlaceholders(item);
-  bindMarkdownImages(item);
-  if (scroll) scrollMessagesToBottom();
-  return true;
+  if (message.kind === "reasoning") {
+    const item = Array.from(els.messages.querySelectorAll("[data-message-id]"))
+      .find((node) => node.dataset.messageId === String(message.id));
+    if (!item) return false;
+    const parts = message.reasoningParts?.length ? message.reasoningParts : [message.text || ""].filter(Boolean);
+    const countText = t("reasoning.count", { count: parts.length });
+    const countEl = item.querySelector(".reasoning-summary-count");
+    if (countEl) countEl.textContent = countText;
+    const partsList = item.querySelector(".reasoning-parts");
+    if (partsList) {
+      partsList.innerHTML = parts.map((part) => `<li>${renderMarkdown(part)}</li>`).join("");
+    }
+    bindImagePlaceholders(item);
+    bindMarkdownImages(item);
+    if (scroll) scrollMessagesToBottom();
+    return true;
+  }
+
+  if (message.role === "tool") {
+    const item = Array.from(els.messages.querySelectorAll("[data-message-id]"))
+      .find((node) => node.dataset.messageId === String(message.id));
+    if (!item) return false;
+    const bubble = item.querySelector(".bubble.plain, .bubble");
+    if (bubble) {
+      bubble.textContent = message.text || "";
+      if (scroll) scrollMessagesToBottom();
+      return true;
+    }
+    return false;
+  }
+
+  if (message.role === "assistant" && !message.kind) {
+    let item = Array.from(els.messages.querySelectorAll("[data-message-id]"))
+      .find((node) => node.dataset.messageId === String(message.id));
+
+    if (!item) {
+      const pendingNode = els.messages.querySelector(".message.assistant.pending-reply");
+      if (pendingNode) {
+        pendingNode.dataset.messageId = String(message.id);
+        pendingNode.classList.remove("pending-reply");
+        item = pendingNode;
+      } else {
+        return false;
+      }
+    }
+
+    let bubble = item.querySelector(".bubble.markdown");
+    if (!bubble) {
+      bubble = item.querySelector(".bubble");
+      if (bubble) bubble.className = "bubble markdown";
+    }
+    if (!bubble) return false;
+
+    let rawText = message.text || "";
+    const planInfo = extractProposedPlan(rawText);
+    if (planInfo.hasPlan) {
+      const newItem = renderMessage(message);
+      item.replaceWith(newItem);
+      if (scroll) scrollMessagesToBottom();
+      return true;
+    }
+
+    bubble.innerHTML = renderMarkdown(rawText);
+    item.classList.toggle("streaming-reply", Boolean(message.streamingReply));
+    bindImagePlaceholders(item);
+    bindMarkdownImages(item);
+    if (scroll) scrollMessagesToBottom();
+    return true;
+  }
+
+  return false;
 }
 
 function renderAutomationHeartbeat(message) {
@@ -6198,6 +6400,7 @@ function renderAutomationHeartbeat(message) {
 function renderReasoningMessage(message) {
   const item = document.createElement("article");
   item.className = "message system reasoning-message";
+  if (message.id) item.dataset.messageId = String(message.id);
   const parts = message.reasoningParts?.length ? message.reasoningParts : [message.text || ""].filter(Boolean);
   const countText = t("reasoning.count", { count: parts.length });
   const title = t("reasoning.process");
@@ -6249,6 +6452,8 @@ function renderImageGenerationStatus(state) {
 function renderToolGroup(messages) {
   const item = document.createElement("article");
   item.className = "message tool compact-tool-group";
+  const ids = messages.map((m) => m?.id || "").filter(Boolean);
+  item.dataset.toolGroupIds = ids.join(",");
   const title = toolGroupTitle(messages);
   const details = messages.map((message, index) => {
     const text = String(message.text || "").trim();

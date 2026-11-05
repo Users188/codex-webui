@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { getLanUrls, getPrimaryLanUrl, isTailscaleAddress } from "../server/network-urls.js";
+import { getLanUrls, getPrimaryLanUrl, isLoopbackOrLocalAddress, isTailscaleAddress, isTailscaleHost } from "../server/network-urls.js";
 
 test("prefers a private LAN address and skips tunnel benchmark addresses", () => {
   const interfaces = {
@@ -46,4 +46,37 @@ test("identifies Tailscale CGNAT IPv4 and IPv6 addresses", () => {
   assert.equal(isTailscaleAddress("127.0.0.1"), false);
   assert.equal(isTailscaleAddress(""), false);
   assert.equal(isTailscaleAddress(null), false);
+});
+
+test("identifies Tailscale MagicDNS and machine hostnames", () => {
+  assert.equal(isTailscaleHost("desktop-cjh:9526", "DESKTOP-CJH"), true);
+  assert.equal(isTailscaleHost("desktop-cjh", "DESKTOP-CJH"), true);
+  assert.equal(isTailscaleHost("desktop-cjh.taild7cd2c.ts.net:9526", "DESKTOP-CJH"), true);
+  assert.equal(isTailscaleHost("desktop-cjh.taild7cd2c.ts.net", "DESKTOP-CJH"), true);
+  assert.equal(isTailscaleHost("foo.bar.ts.net", "DESKTOP-CJH"), true);
+
+  assert.equal(isTailscaleHost("localhost:9526", "DESKTOP-CJH"), false);
+  assert.equal(isTailscaleHost("127.0.0.1:9526", "DESKTOP-CJH"), false);
+  assert.equal(isTailscaleHost("192.168.1.1:9526", "DESKTOP-CJH"), false);
+  assert.equal(isTailscaleHost("", "DESKTOP-CJH"), false);
+  assert.equal(isTailscaleHost(null, "DESKTOP-CJH"), false);
+});
+
+test("identifies loopback and local interface addresses", () => {
+  const interfaces = {
+    Mihomo: [{ family: "IPv4", address: "198.18.0.1", internal: false }],
+    Ethernet: [{ family: "IPv4", address: "192.168.50.131", internal: false }]
+  };
+
+  assert.equal(isLoopbackOrLocalAddress("127.0.0.1", interfaces), true);
+  assert.equal(isLoopbackOrLocalAddress("::1", interfaces), true);
+  assert.equal(isLoopbackOrLocalAddress("::ffff:127.0.0.1", interfaces), true);
+  assert.equal(isLoopbackOrLocalAddress("198.18.0.1", interfaces), true);
+  assert.equal(isLoopbackOrLocalAddress("192.168.50.131", interfaces), true);
+  assert.equal(isLoopbackOrLocalAddress("::ffff:192.168.50.131", interfaces), true);
+
+  assert.equal(isLoopbackOrLocalAddress("192.168.50.132", interfaces), false);
+  assert.equal(isLoopbackOrLocalAddress("8.8.8.8", interfaces), false);
+  assert.equal(isLoopbackOrLocalAddress("", interfaces), false);
+  assert.equal(isLoopbackOrLocalAddress(null, interfaces), false);
 });
