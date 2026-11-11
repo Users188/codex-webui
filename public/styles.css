@@ -6243,3 +6243,684 @@ button:disabled,
   line-height: 1.6 !important;
   color: #e2e8f0 !important;
 }
+
+/* Mobile topbar layout must win over the desktop workbench polish above. */
+#topbarActions .topbar-more-btn {
+  display: none !important;
+}
+
+.topbar-secondary-actions {
+  display: contents;
+}
+
+.topbar-action-label,
+.topbar-more-header,
+.thread-mobile-meta,
+.sidebar-backdrop {
+  display: none;
+}
+
+.thread-connection-status {
+  display: contents;
+}
+
+#topbarActions #resumeStatus.hidden {
+  display: none !important;
+}
+
+@media (max-width: 900px), (max-width: 1100px) and (pointer: coarse) {
+  body {
+    overflow: hidden;
+  }
+
+  .app-shell {
+    position: fixed;
+    inset: var(--visual-viewport-offset-top) 0 auto;
+    height: var(--visual-viewport-height) !important;
+  }
+
+  .chat-pane {
+    height: var(--visual-viewport-height) !important;
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+  }
+
+  .topbar {
+    position: relative !important;
+    inset: auto !important;
+    transform: none !important;
+    z-index: 19 !important;
+    height: auto !important;
+    min-height: 56px !important;
+    padding: calc(8px + max(env(safe-area-inset-top, 0px), var(--fullscreen-status-inset))) 12px 8px !important;
+  }
+
+  .messages {
+    height: auto !important;
+    min-height: 0 !important;
+    padding: 16px max(12px, env(safe-area-inset-left)) 20px !important;
+    overflow-x: hidden !important;
+  }
+
+  .message,
+  .message-stream {
+    min-width: 0;
+    max-width: 100% !important;
+  }
+
+  .message.user {
+    max-width: 92% !important;
+    padding: 10px 12px !important;
+  }
+
+  .bubble.markdown {
+    overflow-wrap: anywhere;
+  }
+
+  .sidebar {
+    z-index: 18 !important;
+    position: fixed;
+    inset: calc(var(--visual-viewport-offset-top) + var(--mobile-topbar-height, 68px)) auto auto 0 !important;
+    width: min(88vw, 340px) !important;
+    height: calc(var(--visual-viewport-height) - var(--mobile-topbar-height, 68px)) !important;
+    padding-top: 12px !important;
+    padding-bottom: calc(12px + max(env(safe-area-inset-bottom, 0px), var(--fullscreen-navigation-inset))) !important;
+    transform: translateX(-104%);
+  }
+
+  .sidebar.open {
+    transform: translateX(0);
+  }
+
+  .sidebar-backdrop {
+    position: fixed;
+    z-index: 17;
+    inset: calc(var(--visual-viewport-offset-top) + var(--mobile-topbar-height, 68px)) 0 auto;
+    height: calc(var(--visual-viewport-height) - var(--mobile-topbar-height, 68px));
+    background: rgba(0, 0, 0, 0.28);
+  }
+
+  .sidebar.open ~ .sidebar-backdrop {
+    display: block;
+  }
+
+  .mobile-only {
+    display: grid;
+  }
+
+  .sidebar-resizer,
+  .side-panel-resizer {
+    display: none !important;
+  }
+
+  #composer {
+    z-index: 5 !important;
+    inset: auto !important;
+    width: calc(100% - 20px) !important;
+    gap: 4px !important;
+    padding: 8px 10px !important;
+    margin: 0 auto calc(8px + max(env(safe-area-inset-bottom, 0px), var(--fullscreen-navigation-inset))) !important;
+  }
+
+  #composer .composer-input-row textarea {
+    font-size: 16px !important;
+    max-height: min(180px, calc(var(--visual-viewport-height) * 0.25)) !important;
+  }
+
+  #composer .composer-toolbar {
+    min-width: 0;
+    gap: 4px !important;
+    padding: 0 !important;
+  }
+
+  #composer .composer-inline-actions {
+    min-height: 44px;
+    margin-left: auto;
+    gap: 2px;
+  }
+
+  #composer .attach-button,
+  #composer .settings-toggle,
+  #composer #planModeToggle {
+    width: 44px !important;
+    height: 44px !important;
+    min-height: 44px !important;
+    flex: 0 0 auto;
+  }
+
+  #composer #planModeToggle {
+    width: auto !important;
+    padding: 0 10px !important;
+  }
+
+  #composer .composer-submit-wrap {
+    margin-left: 4px;
+  }
+
+  #composer .send-button {
+    min-height: 44px !important;
+    min-width: 60px;
+  }
+
+  .keyboard-open #composer {
+    margin-bottom: 6px !important;
+  }
+
+  .setup-band {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: var(--mobile-composer-bottom, var(--mobile-composer-height)) !important;
+    max-height: max(0px, min(360px, calc(var(--visual-viewport-height) - var(--mobile-topbar-height) - var(--mobile-composer-height) - 16px)));
+    overflow: auto;
+    z-index: 13;
+  }
+
+  .setup-band:not(.open) {
+    display: none;
+  }
+
+  .setup-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .setup-grid .field {
+    min-width: 0;
+  }
+
+  .auth-panel,
+  .approval-panel {
+    max-height: 40%;
+    overflow: auto;
+  }
+
+  .thread-lock-banner {
+    position: relative;
+    inset: auto;
+    margin: 0 10px 8px;
+    max-height: 35%;
+    overflow: auto;
+    flex-wrap: wrap;
+  }
+
+  #taskSidePanel {
+    position: fixed;
+    inset: var(--visual-viewport-offset-top) 0 auto;
+    z-index: 40 !important;
+    width: 100% !important;
+    min-width: 0;
+    max-width: none;
+    height: var(--visual-viewport-height) !important;
+  }
+
+  #taskSidePanel .side-panel-header {
+    padding-top: max(7px, env(safe-area-inset-top, 0px));
+  }
+
+  #taskSidePanel .side-tab-btn,
+  #closeSidePanel {
+    min-height: 44px;
+  }
+
+  #closeSidePanel {
+    width: 44px;
+    flex: 0 0 44px;
+  }
+
+  #terminalPane {
+    position: absolute !important;
+    inset: var(--mobile-topbar-height) 0 0 !important;
+    z-index: 16 !important;
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none;
+  }
+
+  #terminalPane .terminal-toolbar {
+    height: 52px !important;
+    min-height: 52px !important;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding: 4px !important;
+  }
+
+  #terminalPane .terminal-toolbar > * {
+    flex: 0 0 auto;
+    min-height: 44px;
+  }
+
+  #terminalPane .terminal-toolbar > .secondary-action {
+    width: auto;
+    min-width: 44px;
+    white-space: nowrap;
+  }
+
+  #terminalPane .terminal-tabs {
+    max-width: 40%;
+    min-width: 80px;
+    align-items: center;
+  }
+
+  #terminalPane .terminal-shell-select {
+    width: 128px;
+    min-width: 0;
+    background: #282c34;
+    color: #e2e8f0;
+  }
+
+  #terminalPane .terminal-toolbar .icon-button {
+    width: 44px;
+    color: #e2e8f0;
+  }
+
+  #terminalPane #closeTerminalPaneBtn {
+    position: sticky;
+    right: 0;
+    margin-left: auto;
+    width: 44px;
+    background: #14171d;
+    z-index: 1;
+  }
+
+  #terminalPane #terminalOutputViewport {
+    margin: 0;
+    background: #0d0e11;
+    color: #e2e8f0;
+  }
+
+  #terminalPane .terminal-input-row {
+    padding-bottom: calc(6px + env(safe-area-inset-bottom, 0px));
+  }
+
+  #terminalStdinInput {
+    min-width: 0;
+    font-size: 16px;
+  }
+
+  #ecosystemModal {
+    top: var(--visual-viewport-offset-top);
+    bottom: auto;
+    height: var(--visual-viewport-height);
+    padding: 0;
+  }
+
+  #ecosystemModal .ecosystem-modal-panel {
+    width: 100%;
+    max-width: none;
+    height: 100%;
+    max-height: none;
+    border-radius: 0;
+  }
+
+  #ecosystemModal .ecosystem-modal-header {
+    align-items: flex-start;
+    gap: 8px;
+    padding: 10px 12px;
+  }
+
+  #ecosystemModal .ecosystem-modal-title-row {
+    flex: 1;
+    min-width: 0;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+  }
+
+  #ecosystemModal .ecosystem-modal-title {
+    white-space: nowrap;
+  }
+
+  #ecosystemModal .ecosystem-tabs {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  #ecosystemModal .eco-tab-btn {
+    min-height: 44px;
+    flex: 0 0 auto;
+  }
+
+  #ecosystemModal #closeEcosystemModal {
+    width: 44px;
+    min-height: 44px;
+    flex: 0 0 44px;
+  }
+
+  #ecosystemModal .eco-panel-toolbar .eco-search-input {
+    min-width: 0;
+    width: auto;
+    font-size: 16px;
+  }
+
+  #ecosystemModal .eco-panel-toolbar .secondary-action {
+    width: auto;
+    flex: 0 0 auto;
+  }
+
+  .chat-pane:has(#terminalPane:not(.hidden)) #composer {
+    visibility: hidden;
+    pointer-events: none;
+  }
+
+  .sidebar.open ~ .chat-pane #composer {
+    visibility: hidden;
+    pointer-events: none;
+  }
+
+  .thread-title-line {
+    flex-wrap: nowrap !important;
+  }
+
+  .thread-title-main,
+  .thread-title {
+    min-width: 0 !important;
+  }
+}
+
+@media (max-width: 900px), (max-width: 1100px) and (pointer: coarse) {
+  .topbar {
+    display: grid !important;
+    grid-template-columns: 44px minmax(0, 1fr) auto 44px;
+    grid-template-areas:
+      "menu title title more"
+      "status status usage usage";
+    align-items: center !important;
+    gap: 2px 6px !important;
+    min-height: 0 !important;
+    padding: calc(4px + max(env(safe-area-inset-top, 0px), var(--fullscreen-status-inset))) 10px 6px !important;
+    overflow: visible !important;
+  }
+
+  .topbar .mobile-only {
+    grid-area: menu;
+    width: 44px !important;
+    height: 44px !important;
+    min-width: 44px !important;
+  }
+
+  .thread-title-wrap,
+  .thread-title-line,
+  .thread-title-main,
+  #topbarActions {
+    display: contents !important;
+  }
+
+  .thread-title {
+    grid-area: title;
+    min-width: 0 !important;
+  }
+
+  .thread-title-main .thread-title {
+    min-height: 30px !important;
+    padding: 2px 4px !important;
+    font-size: 16px !important;
+  }
+
+  .thread-meta {
+    display: none !important;
+  }
+
+  .thread-connection-status {
+    grid-area: status;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .thread-mobile-meta {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--muted);
+    font-size: 11px;
+  }
+
+  #tokenUsageBadge {
+    grid-area: usage;
+    justify-self: end;
+    min-width: 0;
+    max-width: min(48vw, 240px);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  #topbarActions #resumeStatus {
+    max-width: 100% !important;
+    min-height: 36px !important;
+    height: 36px !important;
+    flex: 0 0 auto;
+  }
+
+  #topbarActions #resumeStatus:disabled {
+    opacity: 1;
+  }
+
+  #topbarActions .topbar-more-btn {
+    display: grid !important;
+    grid-area: more;
+    width: 44px !important;
+    height: 44px !important;
+    min-width: 44px !important;
+  }
+
+  #topbarActions .topbar-secondary-actions {
+    position: absolute;
+    z-index: 30;
+    top: calc(100% + 4px);
+    right: 10px;
+    display: none !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px;
+    width: min(320px, calc(100vw - 20px));
+    max-height: max(44px, min(420px, calc(var(--visual-viewport-height) - var(--mobile-topbar-height) - 16px)));
+    overflow-y: auto;
+    padding: 8px;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: color-mix(in srgb, var(--panel) 96%, transparent);
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+  }
+
+  #topbarActions .topbar-secondary-actions.open {
+    display: grid !important;
+  }
+
+  #topbarActions .topbar-more-header {
+    display: block !important;
+    grid-column: 1 / -1;
+    padding: 2px 4px 5px;
+    color: var(--muted);
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  #topbarActions .topbar-secondary-actions .icon-button,
+  #topbarActions .topbar-secondary-actions .thread-action-btn,
+  #topbarActions .topbar-secondary-actions .topbar-action-btn,
+  #topbarActions .topbar-secondary-actions .fullscreen-toggle {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: flex-start !important;
+    gap: 9px !important;
+    width: 100% !important;
+    min-width: 0 !important;
+    height: auto !important;
+    min-height: 44px !important;
+    padding: 9px 10px !important;
+    border: 1px solid transparent !important;
+    border-radius: 10px !important;
+    text-align: left;
+  }
+
+  #topbarActions .topbar-secondary-actions .icon-button svg,
+  #topbarActions .topbar-secondary-actions .thread-action-btn svg,
+  #topbarActions .topbar-secondary-actions .topbar-action-btn svg,
+  #topbarActions .topbar-secondary-actions .fullscreen-toggle svg {
+    flex: 0 0 auto;
+    width: 18px !important;
+    height: 18px !important;
+  }
+
+  #topbarActions .topbar-secondary-actions .thread-action-btn.danger {
+    color: var(--danger) !important;
+  }
+
+  #topbarActions .topbar-action-label {
+    display: block !important;
+    min-width: 0;
+    overflow: hidden;
+    color: inherit;
+    font-size: 12.5px;
+    font-weight: 550;
+    line-height: 1.25;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  #topbarActions .topbar-secondary-actions .hidden {
+    display: none !important;
+  }
+
+}
+
+@media (max-width: 1100px) and (pointer: coarse) and (orientation: landscape) {
+  .topbar {
+    grid-template-areas: "menu title status more";
+    grid-template-columns: 44px minmax(0, 1fr) auto 44px;
+  }
+
+  #tokenUsageBadge,
+  .thread-mobile-meta {
+    display: none !important;
+  }
+}
+
+/* Compact reasoning summaries; full Markdown is rendered only when expanded. */
+.reasoning-message summary {
+  display: flex !important;
+  min-height: 34px;
+  gap: 7px !important;
+  padding: 4px 0 !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  color: var(--muted) !important;
+  font-size: 12.5px !important;
+}
+
+.reasoning-message summary:hover,
+.reasoning-message details[open] summary {
+  background: transparent !important;
+  color: var(--ink) !important;
+}
+
+.reasoning-message summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.reasoning-message .reasoning-summary-title {
+  flex: 0 0 auto;
+  font-weight: 550;
+}
+
+.reasoning-preview {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.8;
+}
+
+.reasoning-chevron {
+  flex: 0 0 auto;
+}
+
+.reasoning-indicator {
+  display: none;
+  flex: 0 0 6px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.reasoning-active .reasoning-indicator {
+  display: block;
+  animation: reasoning-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes reasoning-pulse {
+  50% { opacity: 0.35; }
+}
+
+.reasoning-message .reasoning-body {
+  min-width: 0;
+  max-height: min(360px, 42dvh);
+  overflow: auto;
+  overscroll-behavior: contain;
+  margin: 4px 0 0 7px;
+  padding: 0 10px 0 12px;
+  border: 0;
+  border-left: 2px solid var(--line);
+  border-radius: 0;
+  background: transparent !important;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+.reasoning-part + .reasoning-part {
+  margin-top: 12px;
+}
+
+.reasoning-part > :first-child {
+  margin-top: 0;
+}
+
+.reasoning-part > :last-child {
+  margin-bottom: 0;
+}
+
+.reasoning-part p,
+.reasoning-pending {
+  margin: 0 0 8px;
+}
+
+.reasoning-part :is(h1, h2, h3, h4, h5, h6) {
+  margin: 10px 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.reasoning-part pre,
+.reasoning-part table {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.reasoning-part table {
+  display: block;
+}
+
+@media (max-width: 900px), (max-width: 1100px) and (pointer: coarse) {
+  .reasoning-message summary {
+    min-height: 44px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reasoning-active .reasoning-indicator {
+    animation: none;
+  }
+}

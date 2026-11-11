@@ -29,6 +29,12 @@ import {
 } from "./file-explorer.js";
 import { currentLocale, initI18n, t } from "./i18n.js";
 import {
+  appendReasoningSummary,
+  cleanReasoningParts,
+  reasoningDisplay,
+  reasoningPartsForDisplay
+} from "./reasoning-display.js";
+import {
   extractProposedPlan,
   normalizePlanSteps,
   buildApprovalDecisions,
@@ -95,6 +101,7 @@ const byteEncoder = new TextEncoder();
 const TURN_PAGE_LIMIT = 6;
 const TURN_ITEMS_VIEW = "full";
 const THEME_STORAGE_KEY = "codex-webui-theme";
+const MOBILE_LAYOUT_QUERY = "(max-width: 900px), (max-width: 1100px) and (pointer: coarse)";
 const LAST_THREAD_STORAGE_KEY = "codex-webui-last-thread-id";
 const TOKEN_STORAGE_KEY = "codex-webui-access-token";
 const THREAD_URL_PARAM = "thread";
@@ -245,6 +252,7 @@ const els = {
   openSidebar: document.querySelector("#openSidebar"),
   closeSidebar: document.querySelector("#closeSidebar"),
   sidebar: document.querySelector("#sidebar"),
+  sidebarBackdrop: document.querySelector("#sidebarBackdrop"),
   messages: document.querySelector("#messages"),
   composer: document.querySelector("#composer"),
   promptInput: document.querySelector("#promptInput"),
@@ -279,6 +287,9 @@ const els = {
   threadTitle: document.querySelector("#threadTitle"),
   threadMeta: document.querySelector("#threadMeta"),
   resumeStatus: document.querySelector("#resumeStatus"),
+  topbarActions: document.querySelector("#topbarActions"),
+  topbarMoreBtn: document.querySelector("#topbarMoreBtn"),
+  topbarSecondaryActions: document.querySelector("#topbarSecondaryActions"),
   threadLockBanner: document.querySelector("#threadLockBanner"),
   lockRetryBtn: document.querySelector("#lockRetryBtn"),
   lockForkBtn: document.querySelector("#lockForkBtn"),
@@ -403,7 +414,9 @@ async function boot() {
     if (projectsData) applyDesktopState(projectsData);
   }).catch(() => {});
   state.authMode = String(info?.authMode || "");
-  state.desktopBridgeConnected = null;
+  state.desktopBridgeConnected = typeof info?.desktopBridgeConnected === "boolean"
+    ? info.desktopBridgeConnected
+    : null;
   state.threadSettingsAvailable = Boolean(info?.capabilities?.threadSettings);
   state.workspaceBrowserAvailable = Boolean(info?.capabilities?.workspaceBrowser);
   state.threadFilterCwds = scopeCwdsFrom(info);
@@ -558,6 +571,7 @@ async function initialLoad() {
 function bindUi() {
   setupImageComposer();
   setupMobileViewport();
+  setupTopbarMoreMenu();
   setupBackButtonGuard();
   updateFullscreenToggle();
   initSidebarResizer();
@@ -580,8 +594,18 @@ function bindUi() {
     }
   });
   els.searchThreads.addEventListener("input", renderThreads);
-  els.openSidebar.addEventListener("click", () => els.sidebar.classList.add("open"));
-  els.closeSidebar.addEventListener("click", () => els.sidebar.classList.remove("open"));
+  els.openSidebar.addEventListener("click", () => setSidebarOpen(!els.sidebar.classList.contains("open")));
+  els.closeSidebar.addEventListener("click", () => setSidebarOpen(false));
+  els.sidebarBackdrop?.addEventListener("click", () => setSidebarOpen(false));
+  const mobileLayout = window.matchMedia(MOBILE_LAYOUT_QUERY);
+  mobileLayout.addEventListener("change", () => setSidebarOpen(false));
+  setSidebarOpen(false);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && els.sidebar.classList.contains("open")) {
+      setSidebarOpen(false);
+      els.openSidebar.focus();
+    }
+  });
   els.deviceLogin.addEventListener("click", startDeviceLogin);
   els.usageRefresh?.addEventListener("click", loadRateLimits);
   els.themeSelect.addEventListener("change", () => setThemePreference(els.themeSelect.value));
@@ -1049,14 +1073,11 @@ function setupMobileViewport() {
     const viewportBottom = layoutViewportResized ? window.innerHeight : visualBottom;
     const inferredKeyboardInset = Math.max(0, window.innerHeight - viewportBottom);
 
-    updateMobileChromeMetrics();
-    document.documentElement.style.setProperty("--visual-viewport-height", `${viewportBottom}px`);
+    document.documentElement.style.setProperty("--visual-viewport-height", `${layoutViewportResized ? window.innerHeight : visualHeight}px`);
     document.documentElement.style.setProperty("--visual-viewport-offset-top", `${visualOffsetTop}px`);
     document.documentElement.style.setProperty("--keyboard-inset", `${inferredKeyboardInset}px`);
-
-    const composerBottom = els.composer?.getBoundingClientRect().bottom || viewportBottom;
-    const fixedBottomAtZero = composerBottom + inferredKeyboardInset;
-    const keyboardInset = Math.max(0, Math.round(fixedBottomAtZero - viewportBottom));
+    updateMobileChromeMetrics();
+    const keyboardInset = Math.round(inferredKeyboardInset);
     const keyboardOpen = promptFocused
       && (layoutViewportResized || largestVisualHeight - visualHeight > 80 || inferredKeyboardInset > 80);
     document.documentElement.style.setProperty("--keyboard-inset", `${keyboardInset}px`);
@@ -1104,6 +1125,10 @@ function setupMobileViewport() {
   resizeObserver?.observe(els.chatPane.querySelector(".topbar"));
   window.addEventListener("resize", scheduleSync);
   window.addEventListener("orientationchange", scheduleSync);
+  window.addEventListener("orientationchange", () => {
+    largestVisualHeight = window.visualViewport?.height || window.innerHeight;
+    largestInnerHeight = window.innerHeight;
+  });
   window.visualViewport?.addEventListener("resize", scheduleSync);
   window.visualViewport?.addEventListener("scroll", scheduleSync);
   els.promptInput.addEventListener("focus", () => {
@@ -1121,12 +1146,63 @@ function setupMobileViewport() {
   });
 }
 
+function setupTopbarMoreMenu() {
+  const { topbarActions, topbarMoreBtn, topbarSecondaryActions } = els;
+  if (!topbarActions || !topbarMoreBtn || !topbarSecondaryActions) return;
+
+  const setOpen = (open) => {
+    const isOpen = Boolean(open);
+    topbarMoreBtn.setAttribute("aria-expanded", String(isOpen));
+    topbarSecondaryActions.classList.toggle("open", isOpen);
+  };
+
+  topbarMoreBtn.addEventListener("click", () => {
+    setOpen(topbarMoreBtn.getAttribute("aria-expanded") !== "true");
+  });
+
+  topbarActions.addEventListener("click", (event) => {
+    const button = event.target instanceof Element ? event.target.closest("button") : null;
+    if (button && button !== topbarMoreBtn) setOpen(false);
+  });
+
+  document.addEventListener("click", (event) => {
+    if (!topbarActions.contains(event.target)) setOpen(false);
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || topbarMoreBtn.getAttribute("aria-expanded") !== "true") return;
+    setOpen(false);
+    topbarMoreBtn.focus();
+  });
+
+  const mobileTopbar = window.matchMedia(MOBILE_LAYOUT_QUERY);
+  const closeOnDesktop = () => {
+    if (!mobileTopbar.matches) setOpen(false);
+  };
+  mobileTopbar.addEventListener?.("change", closeOnDesktop);
+  closeOnDesktop();
+}
+
 function updateMobileChromeMetrics() {
   const topbarHeight = Math.ceil(els.chatPane?.querySelector(".topbar")?.getBoundingClientRect().height || 78);
   const composerHeight = Math.ceil(els.composer?.getBoundingClientRect().height || 70);
   const target = els.chatPane || document.documentElement;
   target.style.setProperty("--mobile-topbar-height", `${topbarHeight}px`);
+  document.documentElement.style.setProperty("--mobile-topbar-height", `${topbarHeight}px`);
   target.style.setProperty("--mobile-composer-height", `${composerHeight}px`);
+  document.documentElement.style.setProperty("--mobile-composer-bottom", `${Math.max(0, window.innerHeight - (els.composer?.getBoundingClientRect().top || 0))}px`);
+}
+
+function setSidebarOpen(open) {
+  const mobile = window.matchMedia(MOBILE_LAYOUT_QUERY).matches;
+  const isOpen = mobile && Boolean(open);
+  if (isOpen) {
+    els.promptInput.blur();
+    setSetupBandOpen(false);
+  }
+  els.sidebar.classList.toggle("open", isOpen);
+  els.sidebar.inert = mobile && !isOpen;
+  els.openSidebar.setAttribute("aria-expanded", String(isOpen));
 }
 
 function setupTheme() {
@@ -1241,12 +1317,32 @@ function pushBackGuardState() {
 
 function handleBackButton() {
   if (closeImageViewer()) return;
+  if (state.ecosystemModalOpen) {
+    toggleEcosystemModal(false);
+    return;
+  }
+  if (els.workspacePicker && !els.workspacePicker.classList.contains("hidden")) {
+    closeWorkspacePicker();
+    return;
+  }
+  if (state.sidePanelOpen) {
+    toggleSidePanel(false);
+    return;
+  }
+  if (els.topbarMoreBtn?.getAttribute("aria-expanded") === "true") {
+    els.topbarMoreBtn.click();
+    return;
+  }
+  if (state.terminalPaneOpen) {
+    toggleTerminalPane(false);
+    return;
+  }
   if (document.fullscreenElement || document.webkitFullscreenElement) {
     exitFullscreen();
     return;
   }
   if (els.sidebar?.classList.contains("open")) {
-    els.sidebar.classList.remove("open");
+    setSidebarOpen(false);
     return;
   }
   if (els.setupBand?.classList.contains("open")) {
@@ -2910,7 +3006,7 @@ function createThread() {
       : (cwd ? t("empty.newThreadProject", { project: projectFromCwd(cwd).name }) : t("empty.noProject"))
   );
   renderThreads();
-  els.sidebar.classList.remove("open");
+  setSidebarOpen(false);
   els.promptInput.focus();
 }
 
@@ -2965,7 +3061,7 @@ async function createThreadOnServer() {
   updateProjectSelectState();
   updateTrafficSummary();
   await loadThreads();
-  els.sidebar.classList.remove("open");
+  setSidebarOpen(false);
   return state.currentThread;
 }
 
@@ -3036,7 +3132,7 @@ async function openThread(threadOrId, { showFailure = true } = {}) {
   else renderThreadLoading(state.currentThread, state.threadLoadStats);
   renderThreads();
   els.sendButton.disabled = isSendBlocked();
-  els.sidebar.classList.remove("open");
+  setSidebarOpen(false);
 
   let latestPagePromise = null;
   let latestPageError = null;
@@ -3385,6 +3481,7 @@ function updateLockBanner() {
     els.lockForkBtn.disabled = Boolean(state.resumingThreadId || state.forkingThreadId);
     els.lockForkBtn.textContent = state.forkingThreadId ? t("thread.forking") : t("thread.fork");
   }
+  updateResumeStatus(state.currentThread);
 }
 
 async function retryCurrentThreadResume() {
@@ -3796,8 +3893,11 @@ function flattenThread(thread) {
 function flattenTurns(turns) {
   const messages = [];
   for (const turn of turns || []) {
+    const lastItem = turn.items?.at(-1);
     for (const item of turn.items || []) {
-      const message = messageFromItem(item);
+      const reasoningActive = item.type === "reasoning"
+        && item === lastItem && turnLifecycle(turn.status) === "active";
+      const message = messageFromItem(item, { reasoningActive });
       if (message) messages.push({ ...message, turnId: turn?.id || "" });
     }
   }
@@ -3878,7 +3978,7 @@ function needsResume(thread) {
   return formatStatus(thread?.status) === "notLoaded";
 }
 
-function messageFromItem(item) {
+function messageFromItem(item, { reasoningActive = false } = {}) {
   if (item.type === "userMessage") {
     const content = item.content || [];
     const text = cleanUserText(content.map(inputToText).filter(Boolean).join("\n"));
@@ -3945,20 +4045,12 @@ function messageFromItem(item) {
   }
   if (item.type === "reasoning") {
     const reasoningParts = cleanReasoningParts(item);
-    const text = reasoningParts.join("\n\n");
-    return text ? { role: "system", kind: "reasoning", id: item.id, text, reasoningParts } : null;
+    const text = reasoningParts.filter(Boolean).join("\n\n");
+    return text || reasoningActive
+      ? { role: "system", kind: "reasoning", id: item.id, text, reasoningParts, reasoningActive }
+      : null;
   }
   return null;
-}
-
-function cleanReasoningParts(item) {
-  return [...(item?.summary || []), ...(item?.content || [])]
-    .map((entry) => typeof entry === "string" ? entry : entry?.text || entry?.content || "")
-    .map((text) => text
-      .replace(/<!--[\s\S]*?(?:-->|$)/g, "")
-      .replace(/\n{3,}/g, "\n\n")
-      .trim())
-    .filter(Boolean);
 }
 
 function normalizeImageReference(entry) {
@@ -4202,7 +4294,18 @@ function handleNotification(notification) {
     return;
   }
 
-  if (method === "item/reasoning/summaryTextDelta" || method === "item/reasoning/textDelta") {
+  if (method === "item/reasoning/summaryPartAdded") {
+    if (params.threadId !== state.currentThread?.id) return;
+    markRetryRecovered(params.turnId);
+    const message = state.messages.find((entry) => entry.id === params.itemId);
+    if (!message) return;
+    const partIndex = Math.max(0, Number(params.summaryIndex ?? params.summary_index) || 0);
+    if (!Array.isArray(message.reasoningParts)) message.reasoningParts = [""];
+    while (message.reasoningParts.length <= partIndex) message.reasoningParts.push("");
+    return;
+  }
+
+  if (method === "item/reasoning/summaryTextDelta") {
     if (params.threadId !== state.currentThread?.id) return;
     markRetryRecovered(params.turnId);
     const shouldStickToBottom = shouldStickToLiveOutput();
@@ -4219,16 +4322,18 @@ function handleNotification(notification) {
       message.liveNotification = true;
       state.messages.push(message);
     }
-    const delta = params.delta || params.text || "";
-    message.text = (message.text || "") + delta;
-    if (!message.reasoningParts) message.reasoningParts = [""];
-    message.reasoningParts[0] = (message.reasoningParts[0] || "") + delta;
+    Object.assign(message, appendReasoningSummary(message, params));
     state.lastMessageAt = currentUnixSeconds();
     streamingRenderBatcher.schedule({
       threadId: params.threadId,
       itemId: params.itemId,
       scroll: shouldStickToBottom
     });
+    return;
+  }
+
+  if (method === "item/reasoning/textDelta") {
+    if (params.threadId === state.currentThread?.id) markRetryRecovered(params.turnId);
     return;
   }
 
@@ -4470,7 +4575,18 @@ function handleNotification(notification) {
     markRetryRecovered(params.turnId);
     const shouldStickToBottom = shouldStickToLiveOutput();
     const item = params.item;
-    if (item?.type === "commandExecution") {
+    if (item?.type === "reasoning") {
+      const message = messageFromItem(item, { reasoningActive: true });
+      message.turnId = params.turnId || "";
+      message.liveNotification = true;
+      const existing = state.messages.find((entry) => entry.id === message.id);
+      if (existing?.kind === "reasoning") {
+        existing.reasoningActive = true;
+      } else {
+        replaceOrAppendMessage(message);
+      }
+      renderMessages(shouldStickToBottom);
+    } else if (item?.type === "commandExecution") {
       ensureReplyProgressIndicator(params.threadId, shouldStickToBottom);
       addMessage({ role: "tool", id: item.id, text: `$ ${item.command}` }, shouldStickToBottom);
     } else if (item?.type === "fileChange") {
@@ -4501,7 +4617,15 @@ function handleNotification(notification) {
     streamingRenderBatcher.cancel();
     const shouldStickToBottom = shouldStickToLiveOutput();
     const message = messageFromItem(params.item);
-    if (!message) return;
+    if (!message) {
+      if (params.item?.type === "reasoning") {
+        const existing = state.messages.find((entry) => entry.id === params.item.id);
+        if (existing && reasoningPartsForDisplay(existing).length) existing.reasoningActive = false;
+        else state.messages = state.messages.filter((entry) => entry.id !== params.item.id);
+        renderMessages(shouldStickToBottom);
+      }
+      return;
+    }
     message.turnId = params.turnId || "";
     message.liveNotification = true;
     if (message.role === "user") {
@@ -5911,6 +6035,7 @@ function clearStreamingReply(id) {
 function clearStreamingReplies() {
   for (const message of state.messages) {
     message.streamingReply = false;
+    if (message.kind === "reasoning") message.reasoningActive = false;
   }
 }
 
@@ -5962,6 +6087,9 @@ function scrollMessagesToBottom() {
 }
 
 function entryKey(entry) {
+  if (entry.type === "reasoningGroup") {
+    return `reasoning:${entry.messages[0].id || entry.messages[0].turnId || "pending"}`;
+  }
   if (entry.type === "toolGroup") {
     const ids = (entry.messages || []).map((m) => m?.id || "").filter(Boolean);
     return `tg:${ids.join(",") || "empty"}`;
@@ -5975,7 +6103,9 @@ function entryKey(entry) {
 
 function renderEntryNode(entry) {
   let node;
-  if (entry.type === "toolGroup") {
+  if (entry.type === "reasoningGroup") {
+    node = renderReasoningGroup(entry.messages);
+  } else if (entry.type === "toolGroup") {
     node = renderToolGroup(entry.messages);
   } else {
     node = renderMessage(entry.message);
@@ -6001,8 +6131,9 @@ function reconcileMessageStream(stream) {
   if (newKeys.length === existingKeys.length && newKeys.every((k, i) => k === existingKeys[i])) {
     if (newEntries.length > 0) {
       const lastIndex = newEntries.length - 1;
-      const updatedNode = renderEntryNode(newEntries[lastIndex]);
-      existingNodes[lastIndex].replaceWith(updatedNode);
+      if (newEntries[lastIndex].type !== "reasoningGroup") {
+        existingNodes[lastIndex].replaceWith(renderEntryNode(newEntries[lastIndex]));
+      }
     }
   } else if (
     newKeys.length > existingKeys.length
@@ -6010,8 +6141,9 @@ function reconcileMessageStream(stream) {
   ) {
     if (existingNodes.length > 0) {
       const lastPrevIndex = existingNodes.length - 1;
-      const updatedPrevNode = renderEntryNode(newEntries[lastPrevIndex]);
-      existingNodes[lastPrevIndex].replaceWith(updatedPrevNode);
+      if (newEntries[lastPrevIndex].type !== "reasoningGroup") {
+        existingNodes[lastPrevIndex].replaceWith(renderEntryNode(newEntries[lastPrevIndex]));
+      }
     }
     const footer = stream.querySelector(".reply-progress-footer");
     for (let i = existingKeys.length; i < newEntries.length; i++) {
@@ -6042,7 +6174,7 @@ function reconcileMessageStream(stream) {
       const key = entryKey(entry);
       const isLast = (i === newEntries.length - 1);
       let node;
-      if (existingNodeMap.has(key) && !isLast) {
+      if (existingNodeMap.has(key) && (!isLast || entry.type === "reasoningGroup")) {
         node = existingNodeMap.get(key);
         existingNodeMap.delete(key);
       } else {
@@ -6059,9 +6191,14 @@ function reconcileMessageStream(stream) {
     if (footer) stream.append(footer);
   }
 
-  const shouldHaveFooter = Boolean(
-    state.currentThread?.id && state.replyProgressThreadIds.has(state.currentThread.id)
-  );
+  // Reasoning may change before the last answer/tool node, including on turn completion.
+  for (const entry of newEntries) {
+    if (entry.type !== "reasoningGroup") continue;
+    const node = Array.from(stream.children).find((child) => child.dataset.entryKey === entryKey(entry));
+    if (node) patchReasoningDisplay(node, entry.messages);
+  }
+
+  const shouldHaveFooter = shouldShowReplyProgressFooter();
   const currentFooter = stream.querySelector(".reply-progress-footer");
   if (shouldHaveFooter && !currentFooter) {
     const footer = renderReplyProgressFooter();
@@ -6150,7 +6287,7 @@ function renderLastMessageTime() {
 }
 
 function renderReplyProgressFooter() {
-  if (!state.currentThread?.id || !state.replyProgressThreadIds.has(state.currentThread.id)) return null;
+  if (!shouldShowReplyProgressFooter()) return null;
   const item = document.createElement("article");
   item.className = "message assistant reply-progress-footer";
   item.innerHTML = `
@@ -6158,6 +6295,14 @@ function renderReplyProgressFooter() {
     <div class="bubble markdown"><span class="reply-dots" aria-label="${escapeHtml(t("turn.replying"))}"></span></div>
   `;
   return item;
+}
+
+function shouldShowReplyProgressFooter() {
+  return Boolean(
+    state.currentThread?.id
+    && state.replyProgressThreadIds.has(state.currentThread.id)
+    && !state.messages.some((message) => message.kind === "reasoning" && message.reasoningActive)
+  );
 }
 
 function groupMessagesForDisplay(messages) {
@@ -6172,6 +6317,17 @@ function groupMessagesForDisplay(messages) {
 
   for (const message of messages) {
     if (message.pendingReply) continue;
+    if (message.kind === "reasoning") {
+      if (!message.reasoningActive && !reasoningPartsForDisplay(message).length) continue;
+      flushTools();
+      const previous = groups.at(-1);
+      if (previous?.type === "reasoningGroup" && message.turnId && previous.messages[0].turnId === message.turnId) {
+        previous.messages.push(message);
+      } else {
+        groups.push({ type: "reasoningGroup", messages: [message] });
+      }
+      continue;
+    }
     if (message.role === "tool") {
       if (["retrying", "retryRecovered", "retryFailed", "contextCompaction"].includes(message.kind)) {
         flushTools();
@@ -6293,19 +6449,14 @@ function patchStreamingMessage(message, scroll) {
   if (!message?.id) return false;
 
   if (message.kind === "reasoning") {
-    const item = Array.from(els.messages.querySelectorAll("[data-message-id]"))
-      .find((node) => node.dataset.messageId === String(message.id));
+    const item = Array.from(els.messages.querySelectorAll(".reasoning-message"))
+      .find((node) => JSON.parse(node.dataset.reasoningIds || "[]").includes(String(message.id)));
     if (!item) return false;
-    const parts = message.reasoningParts?.length ? message.reasoningParts : [message.text || ""].filter(Boolean);
-    const countText = t("reasoning.count", { count: parts.length });
-    const countEl = item.querySelector(".reasoning-summary-count");
-    if (countEl) countEl.textContent = countText;
-    const partsList = item.querySelector(".reasoning-parts");
-    if (partsList) {
-      partsList.innerHTML = parts.map((part) => `<li>${renderMarkdown(part)}</li>`).join("");
-    }
-    bindImagePlaceholders(item);
-    bindMarkdownImages(item);
+    const entry = groupMessagesForDisplay(state.messages).find((group) =>
+      group.type === "reasoningGroup" && group.messages.some((entry) => entry.id === message.id)
+    );
+    if (!entry) return false;
+    patchReasoningDisplay(item, entry.messages);
     if (scroll) scrollMessagesToBottom();
     return true;
   }
@@ -6398,30 +6549,57 @@ function renderAutomationHeartbeat(message) {
 }
 
 function renderReasoningMessage(message) {
+  return renderReasoningGroup([message]);
+}
+
+function renderReasoningGroup(messages) {
+  const display = reasoningDisplay(messages);
+  if (!display.parts.length && !display.active) return null;
   const item = document.createElement("article");
   item.className = "message system reasoning-message";
-  if (message.id) item.dataset.messageId = String(message.id);
-  const parts = message.reasoningParts?.length ? message.reasoningParts : [message.text || ""].filter(Boolean);
-  const countText = t("reasoning.count", { count: parts.length });
-  const title = t("reasoning.process");
-  const renderedParts = parts.map((part) => `<li>${renderMarkdown(part)}</li>`).join("");
   item.innerHTML = `
     <details>
       <summary title="${escapeHtml(t("reasoning.explainer"))}">
         <span class="reasoning-chevron" aria-hidden="true">›</span>
-        <span class="reasoning-summary-title">${escapeHtml(title)}</span>
-        <span class="reasoning-summary-count">${escapeHtml(countText)}</span>
+        <span class="reasoning-indicator" aria-hidden="true"></span>
+        <span class="reasoning-summary-title"></span>
+        <span class="reasoning-preview"></span>
       </summary>
-      <div class="bubble markdown reasoning-body">
-        <p class="reasoning-explainer">${escapeHtml(t("reasoning.explainer"))}</p>
-        <ol class="reasoning-parts">${renderedParts}</ol>
-      </div>
+      <div class="markdown reasoning-body" tabindex="0" role="region" aria-label="${escapeHtml(t("reasoning.summary"))}"></div>
     </details>
   `;
-  bindDisclosureState(item.querySelector("details"), disclosureKey("reasoning", message, title));
-  bindImagePlaceholders(item);
-  bindMarkdownImages(item);
+  const details = item.querySelector("details");
+  bindDisclosureState(details, disclosureKey("reasoning", messages[0], messages[0].turnId || "summary"));
+  details.addEventListener("toggle", () => {
+    if (details.open) renderReasoningBody(item);
+  });
+  patchReasoningDisplay(item, messages);
   return item;
+}
+
+function patchReasoningDisplay(item, messages) {
+  const display = reasoningDisplay(messages);
+  item.dataset.reasoningIds = JSON.stringify(messages.map((message) => String(message.id || "")));
+  item.classList.toggle("reasoning-active", display.active);
+  item.querySelector(".reasoning-summary-title").textContent = t(display.active ? "reasoning.thinking" : "reasoning.summary");
+  item.querySelector(".reasoning-preview").textContent = display.preview;
+  item.reasoningParts = display.parts;
+  if (item.querySelector("details").open) renderReasoningBody(item);
+}
+
+function renderReasoningBody(item) {
+  const parts = item.reasoningParts || [];
+  const signature = JSON.stringify(parts);
+  const body = item.querySelector(".reasoning-body");
+  if (body.dataset.signature === signature) return;
+  const preservedTop = body.scrollTop;
+  body.innerHTML = parts.length
+    ? parts.map((part) => `<div class="reasoning-part">${renderMarkdown(part)}</div>`).join("")
+    : `<p class="reasoning-pending">${escapeHtml(t("reasoning.waiting"))}</p>`;
+  body.dataset.signature = signature;
+  body.scrollTop = preservedTop;
+  bindImagePlaceholders(body);
+  bindMarkdownImages(body);
 }
 
 function renderImageGenerationStatus(state) {
@@ -6826,6 +7004,9 @@ function updateThreadHeader() {
   const metaPath = thread?.cwd ? shortPath(thread.cwd) : t("empty.noProject");
   const archivedText = thread?.archived ? ` · [${t("thread.archivedBadge")}]` : "";
   els.threadMeta.textContent = thread ? `${metaPath} · ${formatStatusLabel(thread.status)}${archivedText}` : t("common.ready");
+  els.threadMeta.title = thread?.cwd || "";
+  const mobileMeta = document.querySelector("#threadMobileMeta");
+  if (mobileMeta) mobileMeta.textContent = thread ? `${formatStatusLabel(thread.status)}${archivedText}` : t("common.ready");
   if (els.archiveThreadBtn) {
     els.archiveThreadBtn.title = t(thread?.archived ? "thread.unarchive" : "thread.archive");
     els.archiveThreadBtn.classList.toggle("active", Boolean(thread?.archived));
@@ -7129,16 +7310,25 @@ function updateResumeStatus(thread) {
   const status = formatStatus(thread?.status);
   const hasThread = Boolean(thread?.id);
   const resuming = hasThread && state.resumingThreadId === thread.id;
-  const resumed = hasThread && status !== "notLoaded" && status !== "draft";
+  const locked = hasThread && state.threadLockConflict && status !== "draft" && !resuming;
+  const resumed = hasThread && !locked && status !== "notLoaded" && status !== "draft";
   els.resumeStatus.classList.toggle("hidden", !hasThread || status === "draft");
   els.resumeStatus.classList.toggle("resumed", resumed);
   els.resumeStatus.classList.toggle("unresumed", !resumed);
   els.chatPane?.classList.toggle("resuming-thread", resuming);
   els.chatPane?.classList.toggle("connected-thread", resumed && !resuming);
-  const label = resuming ? "thread.bridgeLoading" : resumed ? "thread.bridgeConnected" : "thread.bridgeLoad";
+  const label = resuming
+    ? "thread.bridgeLoading"
+    : locked
+      ? "thread.bridgeLockedShort"
+      : resumed
+        ? "thread.bridgeConnected"
+        : "thread.bridgeLoad";
   els.resumeStatus.textContent = t(label);
-  els.resumeStatus.disabled = !hasThread || resumed || resuming;
-  els.resumeStatus.title = t(resumed ? "thread.bridgeConnectedTitle" : "thread.bridgeLoadTitle");
+  els.resumeStatus.disabled = !hasThread || resumed || resuming || locked;
+  els.resumeStatus.title = t(
+    locked ? "thread.bridgeLockedTitle" : resumed ? "thread.bridgeConnectedTitle" : "thread.bridgeLoadTitle"
+  );
 }
 
 function setConnection(key) {

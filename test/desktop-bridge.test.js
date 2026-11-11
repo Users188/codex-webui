@@ -681,6 +681,19 @@ test("WebUI desktop mode uses the selected thread through the shared broker", { 
     (message) => message.type === "desktop-bridge-status" && message.connected === false
   );
   assert.equal(offline.connected, false);
+
+  const offlineInfo = await waitForHttp(`http://127.0.0.1:${port}/api/info?token=${encodeURIComponent(token)}`);
+  assert.equal(offlineInfo.desktopBridgeConnected, false);
+
+  const offlineSocket = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${encodeURIComponent(token)}`);
+  const offlineBrowser = webSocketQueue(offlineSocket);
+  await new Promise((resolve, reject) => {
+    offlineSocket.once("open", resolve);
+    offlineSocket.once("error", reject);
+  });
+  const offlineHello = await offlineBrowser.next((message) => message.type === "hello");
+  assert.equal(offlineHello.desktopBridgeConnected, false);
+  offlineSocket.close();
 });
 
 function resolveWindowsPwsh() {

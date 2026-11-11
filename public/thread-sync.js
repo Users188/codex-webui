@@ -1,3 +1,5 @@
+import { cleanReasoningText, mergeReasoningParts } from "./reasoning-display.js";
+
 export const ACTIVE_THREAD_SYNC_MS = 750;
 export const IDLE_THREAD_SYNC_MS = 4000;
 export const HISTORY_PREFETCH_PX = 240;
@@ -133,6 +135,10 @@ export function mergeRecentMessages(currentMessages, recentMessages, { preserveL
       liveNotification: false
     };
     if (preserveLongerStream) hydrated.text = existing.text;
+    if (preserveLiveState && existing.kind === "reasoning" && existing.reasoningActive && incoming.reasoningActive) {
+      hydrated.reasoningParts = mergeReasoningParts(existing, incoming);
+      hydrated.text = hydrated.reasoningParts.map(cleanReasoningText).filter(Boolean).join("\n\n");
+    }
     return hydrated;
   });
 
@@ -310,7 +316,8 @@ function finalizeMessages(messages) {
       ...message,
       pendingLocal: false,
       pendingReply: false,
-      streamingReply: false
+      streamingReply: false,
+      ...(message.kind === "reasoning" ? { reasoningActive: false } : {})
     }));
 }
 
@@ -323,6 +330,7 @@ function messageSignature(messages) {
     Boolean(message?.pendingLocal),
     Boolean(message?.pendingReply),
     Boolean(message?.streamingReply),
+    Boolean(message?.reasoningActive),
     Boolean(message?.liveNotification),
     String(message?.turnId || ""),
     String(message?.clientUserMessageId || ""),

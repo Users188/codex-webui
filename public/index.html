@@ -49,9 +49,11 @@
         <div class="sidebar-resizer" id="sidebarResizer" role="separator" aria-orientation="vertical" title="拖拽调整宽度，双击还原" data-i18n-title="sidebar.resize"></div>
       </aside>
 
+      <button class="sidebar-backdrop" id="sidebarBackdrop" type="button" aria-label="关闭会话列表" data-i18n-aria-label="sidebar.close" tabindex="-1"></button>
+
       <main class="chat-pane">
         <header class="topbar">
-          <button class="icon-button mobile-only" id="openSidebar" aria-label="打开会话列表" data-i18n-aria-label="sidebar.open">☰</button>
+          <button class="icon-button mobile-only" id="openSidebar" type="button" aria-label="打开会话列表" data-i18n-aria-label="sidebar.open" aria-controls="sidebar" aria-expanded="false">☰</button>
           <div class="thread-title-wrap">
             <div class="thread-title-line">
               <div class="thread-title-main">
@@ -59,35 +61,52 @@
               <span class="token-usage-badge hidden" id="tokenUsageBadge" title="上下文 Token 用量" data-i18n-title="usage.tokensTitle"></span>
               </div>
               <div class="topbar-actions" id="topbarActions">
-              <button class="icon-button thread-action-btn" id="compactThreadBtn" type="button" title="压缩上下文" data-i18n-title="thread.compact">
-                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 14h6m0 0v6m0-6L3 21m17-7h-6m0 0v6m0-6l7 7M4 10h6m0 0V4m0 6L3 3m17 7h-6m0 0V4m0 6l7-7"/></svg>
-              </button>
-              <button class="icon-button thread-action-btn" id="archiveThreadBtn" type="button" title="归档会话" data-i18n-title="thread.archive">
-                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 8v13H3V8M1 3h22v5H1zM10 12h4"/></svg>
-              </button>
-              <button class="icon-button thread-action-btn danger" id="deleteThreadBtn" type="button" title="删除会话" data-i18n-title="thread.delete">
-                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18m-2 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-              </button>
-              <button class="resume-status" id="resumeStatus" type="button" title="点击连接会话" data-i18n="thread.connect" data-i18n-title="thread.connectTitle">点击连接</button>
-              <button class="icon-button topbar-action-btn" id="startReviewBtn" type="button" title="发起代码审查" data-i18n-title="review.startTitle">
-                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
-              </button>
-              <button class="icon-button topbar-action-btn side-panel-toggle-btn" id="toggleSidePanel" type="button" title="切换右侧工作台面板" data-i18n-title="sidepanel.toggleTitle">
-                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="15" y1="3" x2="15" y2="21"/></svg>
-                <span class="diff-count-badge hidden" id="diffCountBadge">0</span>
-              </button>
-              <button class="icon-button topbar-action-btn" id="toggleTerminalBtn" type="button" title="切换底部终端" data-i18n-title="terminal.toggleTitle">
-                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
-              </button>
-              <button class="icon-button topbar-action-btn" id="openEcosystemBtn" type="button" title="生态中心 (Skills / MCP / Plugins)" data-i18n-title="ecosystem.btnTitle">
-                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
-              </button>
-              <button class="icon-button fullscreen-toggle" id="fullscreenToggle" type="button" aria-label="切换全屏" title="切换全屏" data-i18n-aria-label="fullscreen.toggle" data-i18n-title="fullscreen.toggle">
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path class="fullscreen-icon-enter" d="M8 3H3v5h2V5h3V3Zm8 0v2h3v3h2V3h-5ZM5 16H3v5h5v-2H5v-3Zm14 3h-3v2h5v-5h-2v3Z" />
-                  <path class="fullscreen-icon-exit" d="M5 16h3v3h2v-5H5v2Zm3-8H5v2h5V5H8v3Zm6 11h2v-3h3v-2h-5v5Zm2-11V5h-2v5h5V8h-3Z" />
-                </svg>
-              </button>
+                <div class="thread-connection-status">
+                  <button class="resume-status" id="resumeStatus" type="button" title="点击连接会话" data-i18n="thread.connect" data-i18n-title="thread.connectTitle">点击连接</button>
+                  <span class="thread-mobile-meta" id="threadMobileMeta"></span>
+                </div>
+                <button class="icon-button topbar-more-btn" id="topbarMoreBtn" type="button" title="更多操作" aria-label="更多操作" data-i18n-title="topbar.more" data-i18n-aria-label="topbar.more" aria-controls="topbarSecondaryActions" aria-expanded="false">
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>
+                </button>
+                <div class="topbar-secondary-actions" id="topbarSecondaryActions">
+                  <div class="topbar-more-header" data-i18n="topbar.actions">操作</div>
+                  <button class="icon-button thread-action-btn" id="compactThreadBtn" type="button" title="压缩上下文" data-i18n-title="thread.compact">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 14h6m0 0v6m0-6L3 21m17-7h-6m0 0v6m0-6l7 7M4 10h6m0 0V4m0 6L3 3m17 7h-6m0 0V4m0 6l7-7"/></svg>
+                    <span class="topbar-action-label" data-i18n="topbar.compact">压缩上下文</span>
+                  </button>
+                  <button class="icon-button thread-action-btn" id="archiveThreadBtn" type="button" title="归档会话" data-i18n-title="thread.archive">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 8v13H3V8M1 3h22v5H1zM10 12h4"/></svg>
+                    <span class="topbar-action-label" data-i18n="topbar.archive">归档</span>
+                  </button>
+                  <button class="icon-button thread-action-btn danger" id="deleteThreadBtn" type="button" title="删除会话" data-i18n-title="thread.delete">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18m-2 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                    <span class="topbar-action-label" data-i18n="topbar.delete">删除</span>
+                  </button>
+                  <button class="icon-button topbar-action-btn" id="startReviewBtn" type="button" title="发起代码审查" data-i18n-title="review.startTitle">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
+                    <span class="topbar-action-label" data-i18n="topbar.review">代码审查</span>
+                  </button>
+                  <button class="icon-button topbar-action-btn side-panel-toggle-btn" id="toggleSidePanel" type="button" title="切换右侧工作台面板" data-i18n-title="sidepanel.toggleTitle">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="15" y1="3" x2="15" y2="21"/></svg>
+                    <span class="diff-count-badge hidden" id="diffCountBadge">0</span>
+                    <span class="topbar-action-label" data-i18n="topbar.sidepanel">工作台</span>
+                  </button>
+                  <button class="icon-button topbar-action-btn" id="toggleTerminalBtn" type="button" title="切换底部终端" data-i18n-title="terminal.toggleTitle">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+                    <span class="topbar-action-label" data-i18n="topbar.terminal">终端</span>
+                  </button>
+                  <button class="icon-button topbar-action-btn" id="openEcosystemBtn" type="button" title="生态中心 (Skills / MCP / Plugins)" data-i18n-title="ecosystem.btnTitle">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+                    <span class="topbar-action-label" data-i18n="topbar.ecosystem">生态中心</span>
+                  </button>
+                  <button class="icon-button fullscreen-toggle" id="fullscreenToggle" type="button" aria-label="切换全屏" title="切换全屏" data-i18n-aria-label="fullscreen.toggle" data-i18n-title="fullscreen.toggle">
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path class="fullscreen-icon-enter" d="M8 3H3v5h2V5h3V3Zm8 0v2h3v3h2V3h-5ZM5 16H3v5h5v-2H5v-3Zm14 3h-3v2h5v-5h-2v3Z" />
+                      <path class="fullscreen-icon-exit" d="M5 16h3v3h2v-5H5v2Zm3-8H5v2h5V5H8v3Zm6 11h2v-3h3v-2h-5v5Zm2-11V5h-2v5h5V8h-3Z" />
+                    </svg>
+                    <span class="topbar-action-label" data-i18n="topbar.fullscreen">全屏</span>
+                  </button>
+                </div>
               </div>
             </div>
             <div class="thread-meta" id="threadMeta" data-i18n="common.ready">准备就绪</div>

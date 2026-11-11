@@ -333,7 +333,7 @@ class DesktopCodexBridge {
       role: scope.role,
       bridgeMode: "desktop",
       capabilities: webuiCapabilities,
-      desktopBridgeConnected: true,
+      desktopBridgeConnected: this.connection.isConnected(),
       desktopState: desktopStateManager.loadState(),
       pendingServerRequests: Array.from(this.serverRequests.values())
         .filter((request) => canReceiveThreadContext(scope, threadContextFromAppServerMessage(request)))
@@ -445,6 +445,7 @@ const server = createServer(async (req, res) => {
           host: HOST,
           bridgeMode,
           capabilities: webuiCapabilities,
+          desktopBridgeConnected: bridge.connection.isConnected(),
           lanUrls: getLanUrls(PORT)
         });
         return;
@@ -462,6 +463,7 @@ const server = createServer(async (req, res) => {
         lanUrls: getLanUrls(PORT),
         tokenHash: scope.tokenHash,
         authMode: scope.authMode || "token",
+        desktopBridgeConnected: bridge.connection.isConnected(),
         accessEmail: scope.authMode === "cloudflare-access" ? scope.accessEmail : undefined
       });
       return;
